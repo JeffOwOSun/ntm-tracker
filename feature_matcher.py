@@ -28,10 +28,12 @@ def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
         positive and negative examples. The order of which follows that of layers.
     """
     heat_maps = []
+    ious = []
     for layer_name in layers:
         im_w, im_h = img_size
         _, height, width, _ = layer_dims[layer_name]
         heat_map = - np.ones((height, width))
+        iou_map = np.ndarray(shape=(height, width), dtype=float)
         for x in xrange(width):
             for y in xrange(height):
                 priorbox = [
@@ -52,20 +54,26 @@ def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
                 #IoU
                 iou = area_i / float(area_u)
                 #print('iou: {}'.format(iou))
+                iou_map[y][x] = iou
                 if iou > 0.5:
                     # this is a positive example
-                    print('layer:{}, x:{}, y:{}, iou:{}'.format(layer_name, x,
-                        y, iou))
                     heat_map[y][x] = 1
         heat_maps.append(heat_map)
-    return heat_maps
+        ious.append(iou_map)
+    return heat_maps, ious
 
 
 def main():
     VGG_sizes = get_vgg_sizes()
     #print(VGG_sizes)
-    heatmaps = matches(VGG_sizes, ['conv2_1', 'conv3_3', 'conv4_3', 'conv5_3'], (1280, 720), [(323, 216), (1050,
-        428)])
+    heatmaps, ious = matches(VGG_sizes, ['conv2_1', 'conv3_3', 'conv4_3', 'conv5_3'], (1280, 720),
+            [(323, 216), (1050, 428)])
+    for iou_map in ious:
+        w, h = iou_map.shape
+        for x in xrange(w):
+            for y in xrange(h):
+                if iou_map[y][x] > 0.5:
+                    print('iou: {}'.format(iou_map[y][x]))
     #print(heatmaps)
 
 if __name__ == '__main__':
