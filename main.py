@@ -31,6 +31,8 @@ def main(_):
     #pp.pprint(flags.FLAGS.__flags)
     inputs = tf.placeholder(tf.float32, shape=(50, 224, 224, 3), name="inputs")
     net, end_points = vgg_16(inputs)
+    for key, value in end_points.iteritems():
+        print(key, value.get_shape().as_list())
     import pdb; pdb.set_trace()
     return
 
