@@ -18,7 +18,8 @@ class NTMTracker(object):
 
         Args:
             num_features: number of deep feature vectors NTM needs to select
-            from.
+            from. This parameter determines the dimension of final output of
+            controller, and the additional input dimension expected
 
             feature_depth: number of channels of the features. Currently only
             look at fatures of the same depth.
@@ -63,10 +64,10 @@ class NTMTracker(object):
             if idx == 0:
                 # initial state for the first frame
                 _, state = self.initial_state()
-                indicator = tf.reshape(target, [-1, 1]) # [num_features, num_channels]
+                indicator = tf.reshape(target, [-1]) # [num_features]
             else:
                 tf.get_variable_scope().reuse_variables()
-                indicator = tf.constant(0, shape=[self.num_features, 1])
+                indicator = tf.constant(0, shape=[self.num_features])
 
             M_prev = state['M'] #memory value of previous timestep
             read_w_list_prev = state['read_w'] #read weight history
@@ -159,7 +160,7 @@ class NTMTracker(object):
                 if layer_idx == 0: #the first layer
                     # gate input is input, previous output, value read from mem
                     def new_gate(gate_name):
-                        #             [#f, #c],     [#f, 1],   [#f, 1],   [#f, 1]xn
+                        #             [#f*#c], [#f],   [#f],   [#f, 1]xn
                         return linear([input_, target, o_prev] + read_list_prev,
                                       output_size = self.controller_dim,
                                       bias = True,
@@ -252,7 +253,7 @@ class NTMTracker(object):
         with tf.variable_scope("init_cell"):
             # always zero
             dummy = tf.Variable(tf.constant(dummy_value, dtype=tf.float32,
-                shape=[self.num_features, 1]))
+                shape=[1]))
 
             # memory
             # using dummy to mask out the weight in the linear operation,
