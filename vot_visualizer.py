@@ -21,7 +21,7 @@ def main():
         with open(gt_name, 'r') as f:
             for line in f.readlines():
                 frame = []
-                coords = float(line.split(','))
+                coords = map(float, line.split(','))
                 for i in xrange(4):
                     frame.append((coords[2*i], coords[2*i+1]))
                 gt_frames.append(frame)
@@ -29,34 +29,44 @@ def main():
         raise x
 
     assert(len(gt_frames) == len(images))
-    index = 0
-    #the main loop
-    while True:
+    output_dir = os.path.join(data_path, 'labeled')
+    try:
+        os.mkdir(output_dir)
+    except OSError:
+        pass
+    for index in xrange(len(images)):
         img_name = images[index]
         bbox = gt_frames[index]
-        img = Image.open(img_name)
+        img = Image.open(os.path.join(data_path, img_name))
         d = ImageDraw.Draw(img)
         d.polygon(bbox)
-        img.show()
+        img.save(os.path.join(output_dir, img_name))
+    #index = 0
+    ##the main loop
+    #while True:
+    #    img_name = images[index]
+    #    bbox = gt_frames[index]
+    #    img = Image.open(os.path.join(data_path, img_name))
+    #    d = ImageDraw.Draw(img)
+    #    d.polygon(bbox)
+    #    iqt = ImageQt.ImageQt(img)
 
-        """
-        listen for a key input
-        """
-        while True:
-            key = raw_input('n: next, p: prev, x: exit')
-            if key == 'n':
-                index += 1
-                break
-            elif key == 'p':
-                index -= 1
-                break
-            elif key == 'x':
-                return
-            else:
-                continue
-
-
-    print images
+    #    """
+    #    listen for a key input
+    #    """
+    #    while True:
+    #        print('n: next, p: prev, x: exit')
+    #        key = getch()
+    #        if key == 'n':
+    #            index += 1
+    #            break
+    #        elif key == 'p':
+    #            index -= 1
+    #            break
+    #        elif key == 'x':
+    #            return
+    #        else:
+    #            continue
 
 if __name__ == '__main__':
     main()
