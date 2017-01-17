@@ -32,7 +32,7 @@ def get_statistics(image_dir, anno_dir):
                     else:
                         obj[grandchild.tag] = grandchild.text
                 frame.append(obj)
-            statistics.append((anno_full_path, image_full_path, obj))
+            statistics.append((anno_full_path, image_full_path, frame))
     return statistics
 
 def main():
