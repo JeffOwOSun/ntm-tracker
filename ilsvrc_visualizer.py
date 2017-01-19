@@ -17,10 +17,12 @@ def get_statistics(image_dir, anno_dir):
             anno_relative_path = anno_full_path[len(anno_dir)+1:]
             image_relative_path = anno_relative_path[:-3]+'JPEG'
             image_full_path = os.path.join(image_dir, image_relative_path)
+
             tree = ET.parse(anno_full_path)
             xmlroot = tree.getroot()
             # a frame
             frame = []
+            size = (float(xmlroot[3][0].text), float(xmlroot[3][1].text))
             for child in xmlroot:
                 if not child.tag == 'object':
                     continue
@@ -28,11 +30,11 @@ def get_statistics(image_dir, anno_dir):
                 obj = {}
                 for grandchild in child:
                     if grandchild.tag == 'bndbox':
-                        obj['bbox'] = {x.tag: x.text for x in grandchild}
+                        obj['bbox'] = {x.tag: float(x.text) for x in grandchild}
                     else:
                         obj[grandchild.tag] = grandchild.text
                 frame.append(obj)
-            statistics.append((anno_full_path, image_full_path, frame))
+            statistics.append((anno_full_path, image_full_path, size, frame))
     return statistics
 
 def main():

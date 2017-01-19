@@ -7,7 +7,10 @@ match the features with the ground truth
 def get_vgg_sizes():
     inputs = tf.placeholder(tf.float32, shape=(50, 224, 224, 3), name="inputs")
     net, end_points = vgg_16(inputs)
-    return {x.split('/')[-1]:y.get_shape().as_list() for x,y in end_points.iteritems()}
+    ret_list = [(x.split('/')[-1], y.get_shape().as_list()) for x,y in
+            end_points.iteritems()]
+    ret_dict = {x:y for x,y in ret_list}
+    return ret_dict, ret_list
 
 def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
     """
@@ -64,7 +67,7 @@ def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
 
 
 def main():
-    VGG_sizes = get_vgg_sizes()
+    VGG_sizes, _ = get_vgg_sizes()
     #print(VGG_sizes)
     heatmaps, ious = matches(VGG_sizes, ['conv2_1', 'conv3_3', 'conv4_3', 'conv5_3'], (1280, 720),
             [(323, 216), (1050, 428)])
