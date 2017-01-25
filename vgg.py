@@ -53,7 +53,7 @@ def vgg_arg_scope(weight_decay=0.0005):
     weight_decay: The l2 regularization coefficient.
 
   Returns:
-    An arg_scope.
+    An arg_scopeself.
   """
   with slim.arg_scope([slim.conv2d, slim.fully_connected],
                       activation_fn=tf.nn.relu,
@@ -147,6 +147,7 @@ def vgg_16(inputs,
     the last op containing the log predictions and end_points dict.
   """
   with tf.variable_scope(scope, 'vgg_16', [inputs]) as sc:
+    #print(scope.name, sc.name)
     end_points_collection = sc.name + '_end_points'
     # Collect outputs for conv2d, fully_connected and max_pool2d.
     with slim.arg_scope([slim.conv2d, slim.fully_connected, slim.max_pool2d],

@@ -1,2 +1,11 @@
 *.pyc
 *.pkl
+*.ckpt
+checkpoint
+*.meta
+*.pb
+*.pbtxt
+*.ckpt.data-*-of-*
+*.ckpt.index
+*.ckpt.meta
+*.pyc

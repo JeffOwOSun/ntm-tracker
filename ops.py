@@ -116,9 +116,9 @@ def Linear(input_, output_size, stddev=0.5,
                     return tf.identity(tensor)
                 return _initializer
 
-            range_ = tf.reverse(tf.range(1, output_size+1, 1), [True])
+            range_ = tf.reverse_v2(tf.range(1, output_size+1, 1, dtype=tf.float32), [0])
             b = tf.get_variable(b_name, [output_size], tf.float32,
-                                identity_initializer(tf.cast(range_, tf.float32)))
+                                identity_initializer(range_))
         else:
             b = tf.get_variable(b_name, [output_size], tf.float32,
                                 tf.random_normal_initializer(stddev=stddev))
@@ -132,6 +132,26 @@ def Linear(input_, output_size, stddev=0.5,
             return tf.reshape(output, [-1])
         else:
             return output
+
+def batched_smooth_cosine_similarity(memory, keys):
+    """batched version of smooth cosine similarity
+
+    Args:
+        memory: [batch, mem_size, mem_dim]
+        keys: [batch, num_heads, mem_dim]
+
+    return:
+        similarity: [batch, num_heads, mem_size]
+    """
+    #memory_norm [batch, mem_size, 1]
+    memory_norm = tf.sqrt(tf.reduce_sum(tf.pow(memory, 2),2,keep_dims=True))
+    #keys_norm [batch, num_heads, 1]
+    keys_norm = tf.sqrt(tf.reduce_sum(tf.pow(keys, 2),2,keep_dims=True))
+    #dot_product [batch, num_heads, mem_size]
+    dot_product = tf.batch_matmul(keys, memory, adj_y=True)
+    norm_product = tf.batch_matmul(keys_norm, memory_norm, adj_y=True)
+    return tf.div(dot_product, norm_product)
+
 
 def smooth_cosine_similarity(m, v):
     """Computes smooth cosine similarity.
@@ -151,6 +171,47 @@ def smooth_cosine_similarity(m, v):
 
     similarity = tf.div(tf.reshape(m_dot_v, [-1]), m_norm * v_norm + 1e-3)
     return similarity
+
+def batched_circular_convolution(tensor, kernel):
+    """
+    batched version of circular convolution
+    the first two dimensions of the input are just batch sizes, and on slice
+    level it's just a 1D vector convoluted with a 1D kernel
+
+    Args:
+        tensor: [batch, num_heads, mem_size]
+        kernel: [batch, num_heads, shift_space]
+    return:
+        convoluted_tensor: [batch, num_heads, mem_size]
+    """
+    return
+
+def circular_shift(tensor, shift):
+    """
+    Shift the given tensor by steps on the LAST axis.
+    A positive step means that X[..., i] == X'[..., i+1]
+
+    Args:
+        tensor: [..., dim]
+        shift: an integer, smaller than dim
+    return:
+        a tensor of the same shape as tensor
+    """
+    shape = tensor.get_shape().as_list()
+
+    #NOTE: assuming a positive shift
+    splitting_point = shape[-1]-shift if shift > 0 else 0-shift
+
+    start = [0]*len(shape)
+    start[-1] = splitting_point
+    size = [-1]*len(shape)
+    left_slice = tf.slice(tensor, start, size)
+
+    start = [0]*len(shape)
+    size = [-1]*len(shape)
+    size[-1] = splitting_point
+    right_slice = tf.slice(tensor, start, size)
+    return tf.concat_v2([left_slice, right_slice], axis=-1)
 
 def circular_convolution(v, k):
     """Computes circular convolution.

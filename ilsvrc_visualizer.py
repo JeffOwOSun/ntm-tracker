@@ -3,7 +3,7 @@ another simple script to visualize the bbox of ilsvrc
 """
 import sys
 import os
-from PIL import Image, ImageDraw
+#from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
 
 def get_statistics(image_dir, anno_dir):
@@ -34,6 +34,8 @@ def get_statistics(image_dir, anno_dir):
                     else:
                         obj[grandchild.tag] = grandchild.text
                 frame.append(obj)
+            #if len(frame) > 1:
+            #    print(anno_full_path)
             statistics.append((anno_full_path, image_full_path, size, frame))
     return statistics
 

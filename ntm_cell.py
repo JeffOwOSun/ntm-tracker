@@ -5,16 +5,16 @@ from __future__ import print_function
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.ops import array_ops
 
 from utils import argmax, matmul
 from ops import linear, Linear, softmax, outer_product,\
-    smooth_cosine_similarity, scalar_mul, circular_convolution
+    batched_smooth_cosine_similarity, scalar_mul, circular_convolution
 
-class NTMTracker(object):
-    def __init__(self, max_sequence_length=20,
-            mem_size=128, mem_dim=20, shift_range=1,
-            controller_dim=100, controller_layer_size=10,
-            write_head_size=1, read_head_size=1):
+class NTMCell(object):
+    def __init__(self, num_features, mem_size=128, mem_dim=20, shift_range=1,
+            controller_hidden_size=100, controller_num_layers=10,
+            write_head_size=3, read_head_size=3):
         """
         The ntm tracker core.
 
@@ -29,16 +29,24 @@ class NTMTracker(object):
             max_sequence_length: the maximum value of sequence length. The graph
             will have the same length.
         """
-        self.max_sequence_length = max_sequence_length
+        self.num_features = num_features
         self.mem_size = mem_size
         self.mem_dim = mem_dim
-        self.controller_dim = controller_dim
-        self.controller_layer_size = controller_layer_size
+        self.controller_hidden_size = controller_hidden_size
+        self.controller_num_layers = controller_num_layers
         self.write_head_size = write_head_size
         self.read_head_size = read_head_size
         self.shift_range = shift_range
 
-    def __call__(self, inputs, target, state=None, scope=None):
+        controller_cell = tf.contrib.rnn.BasicLSTMCell(
+                controller_hidden_size, forget_bias=0.0,
+                state_is_tuple=True)
+        self.controller = tf.contrib.rnn.MultiRNNCell(
+                [controller_cell] * controller_num_layers,
+                state_is_tuple=True)
+
+
+    def __call__(self, inputs, target, state, scope=None):
         """
         Args:
             inputs: Input should be extracted features of VGG network.
@@ -64,51 +72,89 @@ class NTMTracker(object):
         self.output_dim = target.get_shape().as_list()[0]
         new_outputs = []
         new_output_logits = []
-        with tf.variable_scope('ntm'):
-            for idx in xrange(self.max_sequence_length):
-                if idx == 0:
-                    # initial state for the first frame
-                    _, state = self.initial_state()
-                    indicator = tf.reshape(target, [-1]) # [num_features]
-                else:
-                    tf.get_variable_scope().reuse_variables()
-                    indicator = tf.constant(0.0, shape=target.get_shape())
+        with tf.variable_scope(scope or 'ntm-cell'):
 
-                M_prev = state['M'] #memory value of previous timestep
-                read_w_list_prev = state['read_w'] #read weight history
-                write_w_list_prev = state['write_w'] #write weight history
-                read_list_prev = state['read'] #read value history
-                #last output. It's a list because controller is an LSTM with multiple cells
-                output_list_prev = state['output']
-                hidden_list_prev = state['hidden'] #hidden state history
+            """
+            memory-related state
+            """
+            #memory value of previous timestep
+            #[batch, mem_size, mem_dim]
+            M_prev = state['M']
+            w_prev = state['head_weight']
+            read_w_list_prev = state['read_w'] #read weight history
+            write_w_list_prev = state['write_w'] #write weight history
+            read_list_prev = state['read'] #read value history
+            #last output. It's a list because controller is an LSTM with multiple cells
+            """
+            controller state
+            """
+            controller_state = state['controller']
 
-                output_list, hidden_list = self.build_controller(inputs[idx],
-                        indicator, read_list_prev, output_list_prev,
-                        hidden_list_prev)
+            #shape of controller_output: [batch, controller_hidden_dim]
+            controller_output, controller_state = self.controller(
+                    tf.concat_v2([inputs, target]+read_list_prev, 1), controller_state)
+            controller_hidden, _ = controller_state
 
-                # last output layer from LSTM controller
-                last_output = output_list[-1]
+            # build a memory
+            # the memory module simply morph the controller output
+            #M, read_w_list, write_w_list, read_list = self.build_memory(M_prev,
+            #        read_w_list_prev, write_w_list_prev, controller_output)
 
-                # build a memory
-                M, read_w_list, write_w_list, read_list = self.build_memory(M_prev,
-                        read_w_list_prev, write_w_list_prev, last_output)
+            """addressing"""
+            # convert the output into the memory_controls matrix ready to be
+            # split into control weights. [batch, memory_control_size]
+            num_heads = self.num_read_heads+self.num_write_heads
+            k_size = self.mem_dim * num_heads
+            beta_size = 1 * num_heads
+            g_size = 1 * num_heads
+            sw_size = (self.shift_range * 2 + 1) * num_heads
+            gamma_size = 1 * num_heads
+            memory_controls = _linear(controller_output,
+                k_size+beta_size+g_size+sw_size+gamma_size,
+                True)
 
-                # get a new output
-                new_output, new_output_logit = self.new_output(last_output)
-                new_outputs.append(new_output)
-                new_output_logits.append(new_output_logit)
+            k, beta, g, sw, gamma = array_ops.split(memory_controls,
+                    [k_size, beta_size, g_size, sw_size, gamma_size], axis=1)
 
-                state = {
-                    'M': M,
-                    'read_w': read_w_list,
-                    'write_w': write_w_list,
-                    'read': read_list,
-                    'output': output_list,
-                    'hidden': hidden_list,
-                }
-                self.states.append(state)
+            #k is now in [batch, mem_dim * num_heads]
+            k = tf.tanh(tf.reshape(k, [-1, num_heads, self.mem_dim]), name='k')
+            #cos similarity [batch, num_heads, mem_size]
+            similarity = batched_smooth_cosine_similarity(M_prev, k)
+            #focus by content, result [batch, num_heads, mem_size]
+            #beta is [batch, num_heads]
+            w_content_focused = tf.nn.softmax(tf.multiply(similarity, beta), dim=2)
+            #g [batch, num_heads]
+            g = tf.sigmoid(g, name='g')
+            #w_prev [batch, num_heads, mem_size]
+            w_gated = tf.add_n([
+                tf.multiply(w_content_focused, g),
+                tf.multiply(w_prev, (tf.constant(1.0) - g)),
+            ])
+            #sw is now in [batch, num_heads * shift_space]
+            #afterwards, sw is in [batch, num_heads, shift_space]
+            sw = tf.softmax(tf.reshape(sw, [-1, num_heads, self.shift_range * 2
+                + 1]), name="shift_weight")
 
-        return tf.stack(new_outputs), tf.stack(new_output_logits), self.states
+            w_conv = batched_circular_convolution(w_gated, sw)
+
+
+
+
+            # get the real output
+            # by extracting the output tensors from the controller_output, and
+            # applying a matrix to change the dimension to target
+            ntm_output, ntm_output_logit = self.extract_output(controller_output)
+
+            state = {
+                'M': M,
+                'read_w': read_w_list,
+                'write_w': write_w_list,
+                'read': read_list,
+                'output': output_list,
+                'hidden': hidden_list,
+            }
+
+        return tf.stack(new_outputs), tf.stack(new_output_logits), state
 
     def build_memory(self, M_prev, read_w_list_prev, write_w_list_prev, last_output):
         """Build a memory to read & write."""
@@ -373,3 +419,58 @@ class NTMTracker(object):
         with tf.variable_scope('output'):
             logit = Linear(output, self.output_dim, name='output')
             return tf.nn.softmax(logit), logit
+
+def _linear(args, output_size, bias, bias_start=0.0, scope=None):
+  """Linear map: sum_i(args[i] * W[i]), where W[i] is a variable.
+
+  Args:
+    args: a 2D Tensor or a list of 2D, batch x n, Tensors.
+    output_size: int, second dimension of W[i].
+    bias: boolean, whether to add a bias term or not.
+    bias_start: starting value to initialize the bias; 0 by default.
+    scope: (optional) Variable scope to create parameters in.
+
+  Returns:
+    A 2D Tensor with shape [batch x output_size] equal to
+    sum_i(args[i] * W[i]), where W[i]s are newly created matrices.
+
+  Raises:
+    ValueError: if some of the arguments has unspecified or wrong shape.
+  """
+  if args is None or (nest.is_sequence(args) and not args):
+    raise ValueError("`args` must be specified")
+  if not nest.is_sequence(args):
+    args = [args]
+
+  # Calculate the total size of arguments on dimension 1.
+  total_arg_size = 0
+  shapes = [a.get_shape() for a in args]
+  for shape in shapes:
+    if shape.ndims != 2:
+      raise ValueError("linear is expecting 2D arguments: %s" % shapes)
+    if shape[1].value is None:
+      raise ValueError("linear expects shape[1] to be provided for shape %s, "
+                       "but saw %s" % (shape, shape[1]))
+    else:
+      total_arg_size += shape[1].value
+
+  dtype = [a.dtype for a in args][0]
+
+  # Now the computation.
+  scope = vs.get_variable_scope()
+  with vs.variable_scope(scope) as outer_scope:
+    weights = vs.get_variable(
+        "weights", [total_arg_size, output_size], dtype=dtype)
+    if len(args) == 1:
+      res = math_ops.matmul(args[0], weights)
+    else:
+      res = math_ops.matmul(array_ops.concat_v2(args, 1), weights)
+    if not bias:
+      return res
+    with vs.variable_scope(outer_scope) as inner_scope:
+      inner_scope.set_partitioner(None)
+      biases = vs.get_variable(
+          "biases", [output_size],
+          dtype=dtype,
+          initializer=init_ops.constant_initializer(bias_start, dtype=dtype))
+  return nn_ops.bias_add(res, biases)
