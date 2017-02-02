@@ -8,11 +8,6 @@ def primary_rnn_cell(input_):
         b = tf.get_variable('matrix_bias',
                 shape=[input_shape[-1]], dtype=tf.float32)
 
-def initial_rnn_state(input_):
-    input_shape = input_.get_shape().as_list()
-    return tf.constant(
-
-
 def main():
     with tf.variable_scope('yoo') as scope:
         x = tf.get_variable('x', [1])
@@ -25,6 +20,11 @@ def main():
     with tf.variable_scope('yoo', reuse=True):
         w = tf.get_variable('x', [1])
     print(tuple(x.name for x in (x,y,z,w,a)))
+
+    with tf.variable_scope('yo') as scope:
+        print(scope.name)
+    with tf.variable_scope('yo') as scope:
+        print(scope.name)
 
 
 if __name__ == '__main__':

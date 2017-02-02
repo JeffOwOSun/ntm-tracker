@@ -1,4 +1,5 @@
-# the core part of our neural turing machine
+# the core part of our neural turing machine, this time with standard LSTM
+# controller and hand-crafted batched functions for memory module
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -93,7 +94,8 @@ class NTMCell(object):
             #shape of controller_output: [batch, controller_hidden_dim]
             controller_output, controller_state = self.controller(
                     tf.concat_v2([inputs, target]+read_list_prev, 1), controller_state)
-            controller_hidden, _ = controller_state
+            #TODO: next line is wrong, but I forgot what use controller_hidden has
+            #controller_hidden, _ = controller_state
 
             # build a memory
             # the memory module simply morph the controller output
@@ -101,14 +103,16 @@ class NTMCell(object):
             #        read_w_list_prev, write_w_list_prev, controller_output)
 
             """addressing"""
-            # convert the output into the memory_controls matrix ready to be
-            # split into control weights. [batch, memory_control_size]
+            # calculate the sizes of parameters
             num_heads = self.num_read_heads+self.num_write_heads
+
             k_size = self.mem_dim * num_heads
             beta_size = 1 * num_heads
             g_size = 1 * num_heads
             sw_size = (self.shift_range * 2 + 1) * num_heads
             gamma_size = 1 * num_heads
+            # convert the output into the memory_controls matrix ready to be
+            # split into control weights. [batch, memory_control_size]
             memory_controls = _linear(controller_output,
                 k_size+beta_size+g_size+sw_size+gamma_size,
                 True)

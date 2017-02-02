@@ -184,12 +184,34 @@ def batched_circular_convolution(tensor, kernel):
     return:
         convoluted_tensor: [batch, num_heads, mem_size]
     """
-    return
+    """
+    1. stack the input into 4D tensor with dimension
+    [batch, num_heads, mem_size, shift_space]
+    2. then the kernel into 4D tensor with dimension
+    [batch, num_heads, shift_space, 1]
+    3. do batch_matmul, produce the convoluted result
+    [batch, num_heads, mem_size, 1]
+    4. remove the last dimension
+    """
+    #shift_space is always odd
+    shift_space = kernel.get_shape().as_list()[-1]
+    start = -shift_space/2
+    stop = shift_space + start
+    #if shift_space is 5, then xrange(-2, 3), (-2,-1,0,1,2)
+    #augmented tensor, with 4 dimensions
+    tensor_aug = tf.stack([circular_shift(tensor, shift) for shift in
+        xrange(start, stop)])
+    #add one extra dimension to the kernel
+    kernel_4d = tf.expand_dims(kernel, -1)
+    #do batch matmul
+    result = tf.batch_matmul(tensor_aug, kernel_4d)
+    return tf.squeeze(result)
+
 
 def circular_shift(tensor, shift):
     """
     Shift the given tensor by steps on the LAST axis.
-    A positive step means that X[..., i] == X'[..., i+1]
+    A positive step means that X[..., i] == X'[..., i-1], positive: shift left
 
     Args:
         tensor: [..., dim]
@@ -200,7 +222,8 @@ def circular_shift(tensor, shift):
     shape = tensor.get_shape().as_list()
 
     #NOTE: assuming a positive shift
-    splitting_point = shape[-1]-shift if shift > 0 else 0-shift
+    splitting_point = shape[-1]+shift if shift < 0 else shift
+    assert(splitting_point >= 0 and splitting_point < shape[-1])
 
     start = [0]*len(shape)
     start[-1] = splitting_point

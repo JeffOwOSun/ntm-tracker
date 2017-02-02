@@ -64,8 +64,8 @@ class NTMTracker(object):
         self.output_dim = target.get_shape().as_list()[0]
         new_outputs = []
         new_output_logits = []
-        with tf.variable_scope('ntm'):
-            for idx in xrange(self.max_sequence_length):
+        for idx in xrange(self.max_sequence_length):
+            with tf.variable_scope('ntm'):
                 if idx == 0:
                     # initial state for the first frame
                     _, state = self.initial_state()

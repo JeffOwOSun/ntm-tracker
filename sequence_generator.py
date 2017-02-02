@@ -129,7 +129,7 @@ def gen_sequences(obj_frame_statistics, iou_threshold = 0.5):
         #add this obj to the sequence if it satisfies
         if count > 0:
             #generate the gt
-            gt = [(iou > 0.5).astype(int) for iou in ious]
+            gt = [(iou > 0.5) for iou in ious]
             #store this obj-frame into the sequence buffer
             seq.append((os.path.join(seq_dir,frame_name+'.JPEG'),
                 frame_size, bbox, gt))

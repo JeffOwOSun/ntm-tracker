@@ -40,13 +40,14 @@ flags.DEFINE_float("momentum", 0.9, "learning rate")
 flags.DEFINE_float("decay", 0.95, "learning rate")
 flags.DEFINE_integer("hidden_size", 100, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 100, "number of LSTM cells")
+flags.DEFINE_string("tag", "", "tag for the log record")
 
 FLAGS = flags.FLAGS
 
 random.seed(42)
 
-def create_ntm(inputs, target_first_frame):
-    ntm = NTMTracker()
+def create_ntm(inputs, target_first_frame, sequence_length=20):
+    ntm = NTMTracker(max_sequence_length=sequence_length)
     outputs, output_logits, states = ntm(inputs, target_first_frame)
     return outputs, output_logits, states
 
@@ -97,7 +98,7 @@ def train_and_val(train_op, loss, merged, target, gt,
     with tf.Session() as sess:
         print('session started')
         writer = tf.summary.FileWriter(os.path.join(FLAGS.log_dir,
-                str(datetime.now())), sess.graph)
+                str(datetime.now())+FLAGS.tag), sess.graph)
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
         # initialize variables
@@ -277,7 +278,8 @@ def main(_):
                 shape=[features_dim[1]*features_dim[2]], name="target")
         gt = tf.placeholder(tf.float32,
             shape=[FLAGS.sequence_length, target.get_shape().as_list()[0]], name="ground_truth")
-    outputs, output_logits, states = create_ntm(features, target)
+    outputs, output_logits, states = create_ntm(features, target,
+            FLAGS.sequence_length)
     with tf.variable_scope('ntm'):
         # softmax is applied to gt due to the requirement of
         # softmax_cross_entropy_with_logits
@@ -303,7 +305,7 @@ def main(_):
     with tf.Session() as sess:
         print('session started')
         writer = tf.summary.FileWriter(os.path.join(FLAGS.log_dir,
-            str(datetime.now())), sess.graph)
+            str(datetime.now())+FLAGS.tag), sess.graph)
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
         # initialize variables
@@ -346,7 +348,7 @@ def main(_):
 
                 real_loss, _, summary = sess.run((loss, train_op, merged),
                         feed_dict = {
-                            target: np.reshape(real_gts[0], [1, -1]),
+                            target: real_gts[0],
                             gt: real_gts,
                         })
                 writer.add_summary(summary, step)
