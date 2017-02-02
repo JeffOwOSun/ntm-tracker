@@ -111,14 +111,17 @@ class NTMCell(object):
             g_size = 1 * num_heads
             sw_size = (self.shift_range * 2 + 1) * num_heads
             gamma_size = 1 * num_heads
+            erase_size = self.mem_dim * self.num_write_heads
+            add_size = self.mem_dim * self.num_write_heads
             # convert the output into the memory_controls matrix ready to be
             # split into control weights. [batch, memory_control_size]
             memory_controls = _linear(controller_output,
-                k_size+beta_size+g_size+sw_size+gamma_size,
+                k_size+beta_size+g_size+sw_size+gamma_size+erase_size+add_size,
                 True)
 
-            k, beta, g, sw, gamma = array_ops.split(memory_controls,
-                    [k_size, beta_size, g_size, sw_size, gamma_size], axis=1)
+            k, beta, g, sw, gamma, erase, add = array_ops.split(memory_controls,
+                    [k_size, beta_size, g_size, sw_size, gamma_size, erase_size,
+                        add_size], axis=1)
 
             #k is now in [batch, mem_dim * num_heads]
             k = tf.tanh(tf.reshape(k, [-1, num_heads, self.mem_dim]), name='k')
@@ -126,6 +129,7 @@ class NTMCell(object):
             similarity = batched_smooth_cosine_similarity(M_prev, k)
             #focus by content, result [batch, num_heads, mem_size]
             #beta is [batch, num_heads]
+            beta = tf.nn.softplus(beta)
             w_content_focused = tf.nn.softmax(tf.multiply(similarity, beta), dim=2)
             #g [batch, num_heads]
             g = tf.sigmoid(g, name='g')
@@ -134,15 +138,47 @@ class NTMCell(object):
                 tf.multiply(w_content_focused, g),
                 tf.multiply(w_prev, (tf.constant(1.0) - g)),
             ])
+            #convolution shift
             #sw is now in [batch, num_heads * shift_space]
             #afterwards, sw is in [batch, num_heads, shift_space]
             sw = tf.softmax(tf.reshape(sw, [-1, num_heads, self.shift_range * 2
                 + 1]), name="shift_weight")
 
+            #[batch, num_heads, mem_size]
             w_conv = batched_circular_convolution(w_gated, sw)
 
+            #sharpening
+            gamma = tf.add(tf.nn.softplus(gamma), tf.constant(1.0))
+            powed_w_conv = tf.pow(w_conv, gamma)
+            w = powed_w_conv / tf.reduce_sum(powed_w_conv, axis=2)
 
+            #split the read and write head weights
+            #w is [batch, num_heads, mem_size]
+            w_read = tf.slice(w, [0,0,0], [-1,self.num_read_heads,-1])
+            w_write = tf.slice(w, [0,self.num_write_heads,0], [-1,-1,-1])
 
+            #memory value of previous timestep M_prev is [batch, mem_size, mem_dim]
+            #the read result
+            read = tf.batch_matmul(w_read, M_prev)
+
+            #now the writing
+            #erase [batch, num_write_heads, mem_dim]
+            erase = 1.0 - tf.sigmoid(tf.reshape(erase,
+                [-1,self.num_write_heads,self.mem_dim]), name="erase")
+            add = tf.tanh(tf.reshape(add,
+                [-1,self.num_write_heads,self.mem_dim]), name="add")
+            #w_write [batch, num_write_heads, mem_size]
+            #M_erase should be [batch, mem_size, mem_dim]
+            #calculate M_erase by outer product of w_write and erase
+            M_erase = \
+            tf.reduce_prod(tf.batch_matmul(tf.expand_dims(w_write,3),
+                tf.expand_dims(erase,2)), axis=1)
+            #calculate M_write by outer product of w_write and add
+            M_write = \
+            tf.reduce_sum(tf.batch_matmul(tf.expand_dims(w_write,3),
+                tf.expand_dims(add,2)), axis=1)
+
+            M = M_prev * M_erase + M_write
 
             # get the real output
             # by extracting the output tensors from the controller_output, and
