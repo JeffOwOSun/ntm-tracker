@@ -71,8 +71,6 @@ class NTMCell(object):
         2. build the memory module
         """
         self.output_dim = target.get_shape().as_list()[0]
-        new_outputs = []
-        new_output_logits = []
         with tf.variable_scope(scope or 'ntm-cell'):
 
             """
@@ -81,15 +79,13 @@ class NTMCell(object):
             #memory value of previous timestep
             #[batch, mem_size, mem_dim]
             M_prev = state['M']
-            w_prev = state['head_weight']
-            read_w_list_prev = state['read_w'] #read weight history
-            write_w_list_prev = state['write_w'] #write weight history
-            read_list_prev = state['read'] #read value history
+            w_prev = state['w']
+            read_prev = state['read'] #read value history
             #last output. It's a list because controller is an LSTM with multiple cells
             """
             controller state
             """
-            controller_state = state['controller']
+            controller_state = state['controller_state']
 
             #shape of controller_output: [batch, controller_hidden_dim]
             controller_output, controller_state = self.controller(
@@ -180,21 +176,20 @@ class NTMCell(object):
 
             M = M_prev * M_erase + M_write
 
-            # get the real output
+            """ get the real output """
             # by extracting the output tensors from the controller_output, and
             # applying a matrix to change the dimension to target
-            ntm_output, ntm_output_logit = self.extract_output(controller_output)
+            ntm_output_logit = _linear(controller_output, self.output_dim, True)
+            ntm_output= tf.nn.softmax(ntm_output_logit)
 
             state = {
                 'M': M,
-                'read_w': read_w_list,
-                'write_w': write_w_list,
-                'read': read_list,
-                'output': output_list,
-                'hidden': hidden_list,
+                'w': w,
+                'read': read,
+                'controller_state': controller_state,
             }
 
-        return tf.stack(new_outputs), tf.stack(new_output_logits), state
+        return ntm_output, ntm_output_logit, state
 
     def build_memory(self, M_prev, read_w_list_prev, write_w_list_prev, last_output):
         """Build a memory to read & write."""
