@@ -8,12 +8,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.ops import array_ops
 
-from utils import argmax, matmul
-from ops import linear, Linear, softmax, outer_product,\
-    batched_smooth_cosine_similarity, scalar_mul, circular_convolution
+from ops import batched_smooth_cosine_similarity,  circular_convolution
 
 class NTMCell(object):
-    def __init__(self, num_features, mem_size=128, mem_dim=20, shift_range=1,
+    def __init__(self, mem_size=128, mem_dim=20, shift_range=1,
             controller_hidden_size=100, controller_num_layers=10,
             write_head_size=3, read_head_size=3):
         """
@@ -30,7 +28,6 @@ class NTMCell(object):
             max_sequence_length: the maximum value of sequence length. The graph
             will have the same length.
         """
-        self.num_features = num_features
         self.mem_size = mem_size
         self.mem_dim = mem_dim
         self.controller_hidden_size = controller_hidden_size
@@ -88,10 +85,13 @@ class NTMCell(object):
             controller_state = state['controller_state']
 
             #shape of controller_output: [batch, controller_hidden_dim]
+            #shape of inputs: [batch, num_channels*num_features]
+            #shape of target: [batch, num_features]
+            #shape of read_prev: [batch, num_read_heads, mem_dim]
+            read_prev = tf.reshape(read_prev,
+                    [-1, self.read_head_size*self.mem_dim])
             controller_output, controller_state = self.controller(
-                    tf.concat_v2([inputs, target]+read_list_prev, 1), controller_state)
-            #TODO: next line is wrong, but I forgot what use controller_hidden has
-            #controller_hidden, _ = controller_state
+                    tf.concat_v2([inputs, target, read_prev], 1), controller_state)
 
             # build a memory
             # the memory module simply morph the controller output
