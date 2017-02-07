@@ -57,19 +57,27 @@ def create_vgg(inputs, feature_layer):
     print(end_points.keys())
     return end_points[feature_layer]
 
-def read_imgs(seq_length):
-    filename_queue = tf.FIFOQueue(100, tf.string)
-    enqueue_placeholder = tf.placeholder(shape=(seq_length), dtype=tf.string)
+def read_imgs(batch_size, seq_length):
+    # a fifo queue with 100 capacity
+    filename_queue = tf.FIFOQueue(batch_size*seq_length, tf.string)
+    # the entrance placeholder to the pipeline
+    enqueue_placeholder = tf.placeholder(shape=(batch_size*seq_length), dtype=tf.string)
+    # the opration to be run to enqueue the real filenames
     enqueue_op = filename_queue.enqueue_many(enqueue_placeholder)
+    # will be called after everything is done
     queue_close_op = filename_queue.close()
-    #filename_queue = tf.train.string_input_producer(file_names, shuffle=False)
+    # reader to convert file names to actual data
     reader = tf.WholeFileReader()
     key, value = reader.read(filename_queue)
+    # here value represents one instance of image
     my_img = tf.image.decode_jpeg(value)
     my_img = tf.reshape(tf.image.resize_images(my_img, [224, 224]), (224, 224, 3))
     my_img = tf.image.per_image_standardization(my_img)
-    batch_img = tf.train.batch([my_img], batch_size = seq_length,
+    # convert the queue-based image stream into a batch
+    batch_img = tf.train.batch([my_img],
+            batch_size = batch_size*seq_length,
             num_threads = 1)
+    batch_img = tf.reshape(batch_img, [batch_size, seq_length, 224, 224, 3])
     return enqueue_placeholder, enqueue_op, queue_close_op, batch_img
 
 def test_read_imgs():
