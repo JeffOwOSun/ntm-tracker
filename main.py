@@ -57,6 +57,21 @@ def create_vgg(inputs, feature_layer):
     print(end_points.keys())
     return end_points[feature_layer]
 
+def get_batch(index, batch_size, seq_length, seqs):
+    seq_batch = seqs[index:index+batch_size]
+    index+=batch_size
+    frame_names = []
+    real_gts = []
+    for seq_dir, obj_name, subseq_id, seq_len, seq in seq_batch:
+        # only need the first seq_length frames
+        seq = seq[:sequence_length]
+        # the file names [batch * seq_length]
+        frame_names += [x[0] for x in seq]
+        # the ground truths [batch, seq_length]
+        real_gts.append(np.array([np.reshape(x[-1][0], (-1)) for x in seq]))
+    real_gts = np.array(real_gts)
+    return frame_names, real_gts, index
+
 def read_imgs(batch_size, seq_length):
     # a fifo queue with 100 capacity
     filename_queue = tf.FIFOQueue(batch_size*seq_length, tf.string)
@@ -118,17 +133,24 @@ def train_and_val(train_op, loss, merged, target, gt,
         3. extract the features
         4. train the network
         """
+        print("loading generated_sequences.pkl...")
         with open('generated_sequences.pkl', 'r') as f:
             generated_sequences = pickle.load(f)
         #shuffle the order
+        print("shuffling the sequences...")
         random.shuffle(generated_sequences)
         #filter the short sequences
+        print("filtering out too short sequences...")
         generated_sequences = [x for x in generated_sequences if x[-2] >=
                 FLAGS.sequence_length]
         print('{} sequences after length filtering'.format(len(generated_sequences)))
         #divide train/test batches
-        test_seqs = generated_sequences[:len(generated_sequences)/10]
-        train_seqs = generated_sequences[len(generated_sequences)/10:]
+        num_train = (len(generated_sequences)/10*9)/FLAGS.batch_size*FLAGS.batch_size
+        num_test = (len(generated_sequences)/10)/FLAGS.batch_size*FLAGS.batch_size
+        test_seqs = generated_sequences[:num_test]
+        train_seqs = generated_sequences[-num_train:]
+        print('{} train seqs, {} test seqs'.format(
+            len(train_seqs), len(test_seqs)))
         step = 0
         num_epochs = FLAGS.num_epochs
         for epoch in xrange(num_epochs):
@@ -136,16 +158,17 @@ def train_and_val(train_op, loss, merged, target, gt,
             random.shuffle(train_seqs)
             print("shuffled training seqs")
             #train
-            for seq_dir, obj_name, subseq_id, seq_len, seq in train_seqs:
-                # enqueue the filenames
-                seq = seq[:FLAGS.sequence_length]
+            index = 0
+            while index < len(train_seqs):
+                # this batch
+                frame_names, real_gts, index = get_batch(index,
+                        FLAGS.batch_size, FLAGS.seq_length, train_seqs)
                 feed_dict = {file_names_placeholder:
-                            [x[0] for x in seq]}
+                            frame_names}
                 #print(feed_dict)
                 sess.run(enqueue_op, feed_dict=feed_dict)
                 # extract the ground truths
                 # finally it will be a 2D array
-                real_gts = np.array([np.reshape(x[-1][0], (-1)) for x in seq])
 
                 real_loss, _, summary = sess.run((loss, train_op, merged),
                     feed_dict = {
@@ -159,16 +182,14 @@ def train_and_val(train_op, loss, merged, target, gt,
 
         step = 0
         accumu_loss = 0
-        for seq_dir, obj_name, subseq_id, seq_len, seq in test_seqs:
-            # enqueue the filenames
-            seq = seq[:FLAGS.sequence_length]
+        index = 0
+        while index < len(test_seqs):
+            frame_names, real_gts, index = get_batch(index,
+                    FLAGS.batch_size, FLAGS.seq_length, test_seqs)
             feed_dict = {file_names_placeholder:
-                        [x[0] for x in seq]}
+                        frame_names}
             sess.run(enqueue_op, feed_dict=feed_dict)
             # extract the ground truths
-            # finally it will be a 2D array
-            real_gts = np.array([np.reshape(x[-1][0], (-1)) for x in seq])
-
             real_loss = sess.run(loss, feed_dict = {
                     target: np.reshape(real_gts[0], [1, -1]),
                     gt: real_gts,
