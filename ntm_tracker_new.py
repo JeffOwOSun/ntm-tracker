@@ -1,4 +1,5 @@
 from ntm_cell import NTMCell
+import tensorflow as tf
 
 class NTMTracker(object):
     def __init__(self, sequence_length=20, batch_size=32, **kwargs):
@@ -23,7 +24,7 @@ class NTMTracker(object):
             for idx in xrange(self.sequence_length):
                 if idx == 0:
                     state = self.cell.zero_state(self.batch_size)
-                    states.append(state)
+                    self.states.append(state)
                     indicator = target
                 else:
                     tf.get_variable_scope().reuse_variables()
@@ -36,8 +37,8 @@ class NTMTracker(object):
                 self.states.append(state)
                 self.outputs.append(ntm_output)
                 self.output_logits.append(ntm_output_logit)
-        return tf.stack(self.outputs, axis=1, "outputs"),\
-                tf.stack(self.output_logits, axis=1, "output_logits"),\
+        return tf.stack(self.outputs, axis=1, name="outputs"),\
+                tf.stack(self.output_logits, axis=1, name="output_logits"),\
                 self.states
 
 

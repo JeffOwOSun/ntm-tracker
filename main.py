@@ -59,25 +59,32 @@ def create_vgg(inputs, feature_layer):
     return end_points[feature_layer]
 
 def get_batch(index, batch_size, seq_length, seqs):
+    """
+    get a batch of frame names and their ground truths
+
+    seqs: the sequence statistics
+    seq_length: the length of subsequence to take
+    batch_size: the number of sequences to push into the batch
+    """
     seq_batch = seqs[index:index+batch_size]
     index+=batch_size
     frame_names = []
     real_gts = []
     for seq_dir, obj_name, subseq_id, seq_len, seq in seq_batch:
         # only need the first seq_length frames
-        seq = seq[:sequence_length]
+        seq = seq[:seq_length]
         # the file names [batch * seq_length]
         frame_names += [x[0] for x in seq]
-        # the ground truths [batch, seq_length]
+        # the ground truths [batch, seq_length, num_features]
         real_gts.append(np.array([np.reshape(x[-1][0], (-1)) for x in seq]))
     real_gts = np.array(real_gts)
     return frame_names, real_gts, index
 
-def read_imgs(batch_size, seq_length):
+def read_imgs(batch_size):
     # a fifo queue with 100 capacity
-    filename_queue = tf.FIFOQueue(batch_size*seq_length, tf.string)
+    filename_queue = tf.FIFOQueue(batch_size, tf.string)
     # the entrance placeholder to the pipeline
-    enqueue_placeholder = tf.placeholder(shape=(batch_size*seq_length), dtype=tf.string)
+    enqueue_placeholder = tf.placeholder(shape=(batch_size), dtype=tf.string)
     # the opration to be run to enqueue the real filenames
     enqueue_op = filename_queue.enqueue_many(enqueue_placeholder)
     # will be called after everything is done
@@ -91,9 +98,8 @@ def read_imgs(batch_size, seq_length):
     my_img = tf.image.per_image_standardization(my_img)
     # convert the queue-based image stream into a batch
     batch_img = tf.train.batch([my_img],
-            batch_size = batch_size*seq_length,
+            batch_size = batch_size,
             num_threads = 1)
-    batch_img = tf.reshape(batch_img, [batch_size, seq_length, 224, 224, 3])
     return enqueue_placeholder, enqueue_op, queue_close_op, batch_img
 
 def test_read_imgs():
@@ -163,7 +169,7 @@ def train_and_val(train_op, loss, merged, target, gt,
             while index < len(train_seqs):
                 # this batch
                 frame_names, real_gts, index = get_batch(index,
-                        FLAGS.batch_size, FLAGS.seq_length, train_seqs)
+                        FLAGS.batch_size, FLAGS.sequence_length, train_seqs)
                 feed_dict = {file_names_placeholder:
                             frame_names}
                 #print(feed_dict)
@@ -173,7 +179,7 @@ def train_and_val(train_op, loss, merged, target, gt,
 
                 real_loss, _, summary = sess.run((loss, train_op, merged),
                     feed_dict = {
-                        target: np.reshape(real_gts[0], [1, -1]),
+                        target: real_gts[:,0,:],
                         gt: real_gts,
                     })
                 writer.add_summary(summary, step)
@@ -192,7 +198,7 @@ def train_and_val(train_op, loss, merged, target, gt,
             sess.run(enqueue_op, feed_dict=feed_dict)
             # extract the ground truths
             real_loss = sess.run(loss, feed_dict = {
-                    target: np.reshape(real_gts[0], [1, -1]),
+                    target: real_gts[:,0,:],
                     gt: real_gts,
                 })
             accumu_loss += real_loss
@@ -288,7 +294,8 @@ def main(_):
     2. train and eval
     """
     """get the inputs"""
-    file_names_placeholder, enqueue_op, q_close_op, batch_img = read_imgs(FLAGS.sequence_length)
+    file_names_placeholder, enqueue_op, q_close_op, batch_img =\
+            read_imgs(FLAGS.batch_size*FLAGS.sequence_length)
     """import VGG"""
     vgg_graph_def = tf.GraphDef()
     with open(FLAGS.vgg_model_frozen, "rb") as f:
@@ -297,6 +304,7 @@ def main(_):
     features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
         batch_img}, return_elements=[FLAGS.feature_layer])[0]
     features_dim = features.get_shape().as_list()
+    print('features_dim', features_dim)
     num_features = features_dim[1]*features_dim[2]
     """compress input dimensions"""
     w = tf.get_variable('input_compressor_w',
@@ -307,11 +315,13 @@ def main(_):
     """the tracker"""
     tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size)
     inputs = tf.reshape(features, shape=[FLAGS.batch_size, FLAGS.sequence_length, -1])
+    #print('reshaped inputs:', inputs.get_shape())
     target_ph = tf.placeholder(tf.float32,
             shape=[FLAGS.batch_size, num_features], name="target")
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
     outputs, output_logits, states = tracker(inputs, target_ph)
+    #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
     """loss"""

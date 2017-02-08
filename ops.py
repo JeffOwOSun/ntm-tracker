@@ -4,7 +4,6 @@ import tensorflow as tf
 
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
-from tensorflow.python.framework import ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variable_scope as vs
 
@@ -148,8 +147,9 @@ def batched_smooth_cosine_similarity(memory, keys):
     #keys_norm [batch, num_heads, 1]
     keys_norm = tf.sqrt(tf.reduce_sum(tf.pow(keys, 2),2,keep_dims=True))
     #dot_product [batch, num_heads, mem_size]
-    dot_product = tf.batch_matmul(keys, memory, adj_y=True)
-    norm_product = tf.batch_matmul(keys_norm, memory_norm, adj_y=True)
+    dot_product = tf.matmul(keys, memory, transpose_b=True)
+    norm_product = tf.matmul(keys_norm, memory_norm,
+            transpose_b=True)
     return tf.div(dot_product, norm_product)
 
 
@@ -200,11 +200,11 @@ def batched_circular_convolution(tensor, kernel):
     #if shift_space is 5, then xrange(-2, 3), (-2,-1,0,1,2)
     #augmented tensor, with 4 dimensions
     tensor_aug = tf.stack([circular_shift(tensor, shift) for shift in
-        xrange(start, stop)])
+        xrange(start, stop)], axis=-1)
     #add one extra dimension to the kernel
     kernel_4d = tf.expand_dims(kernel, -1)
     #do batch matmul
-    result = tf.batch_matmul(tensor_aug, kernel_4d)
+    result = tf.matmul(tensor_aug, kernel_4d)
     return tf.squeeze(result)
 
 
@@ -234,7 +234,7 @@ def circular_shift(tensor, shift):
     size = [-1]*len(shape)
     size[-1] = splitting_point
     right_slice = tf.slice(tensor, start, size)
-    return tf.concat_v2([left_slice, right_slice], axis=-1)
+    return tf.concat_v2([left_slice, right_slice], axis=len(shape)-1)
 
 def circular_convolution(v, k):
     """Computes circular convolution.
