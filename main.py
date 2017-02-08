@@ -8,7 +8,7 @@ import os
 
 from vgg import vgg_16
 
-from ntm import NTMTracker
+from ntm_tracker_new import NTMTracker
 
 import random
 
@@ -33,6 +33,7 @@ flags.DEFINE_boolean("test_read_imgs", False, "test read imgs module")
 flags.DEFINE_boolean("lstm_only", False, "use build-in lstm only")
 flags.DEFINE_string("log_dir", "/tmp/ntm-tracker", "The log dir")
 flags.DEFINE_integer("sequence_length", 20, "The length of fixed sequences")
+flags.DEFINE_integer("batch_size", 16, "size of batch")
 flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
 flags.DEFINE_integer("max_gradient_norm", 5, "for gradient clipping normalization")
 flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
@@ -283,134 +284,57 @@ def lstm_only():
 
 def main(_):
     """
-    create the graph
+    1. create graph
+    2. train and eval
     """
-    """ 1. the img input preprocessor """
+    """get the inputs"""
     file_names_placeholder, enqueue_op, q_close_op, batch_img = read_imgs(FLAGS.sequence_length)
-    """ 2. the VGG feature extractor """
+    """import VGG"""
     vgg_graph_def = tf.GraphDef()
     with open(FLAGS.vgg_model_frozen, "rb") as f:
         vgg_graph_def.ParseFromString(f.read())
-    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs': batch_img},
-            return_elements=[FLAGS.feature_layer])[0]
+    """the features"""
+    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
+        batch_img}, return_elements=[FLAGS.feature_layer])[0]
     features_dim = features.get_shape().as_list()
-    #feature is [20, 28, 28, 512]
-    #compress the feature down to 128 channels
-    print('building ntm')
-    with tf.variable_scope('ntm'):
-        w = tf.get_variable('input_compressor_w',
-                shape=(1,1,features_dim[-1],128), dtype=tf.float32,
-                initializer=tf.contrib.layers.xavier_initializer())
-        features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
-                name="input_compressor")
-        target = tf.placeholder(tf.float32,
-                shape=[features_dim[1]*features_dim[2]], name="target")
-        gt = tf.placeholder(tf.float32,
-            shape=[FLAGS.sequence_length, target.get_shape().as_list()[0]], name="ground_truth")
-    outputs, output_logits, states = create_ntm(features, target,
-            FLAGS.sequence_length)
-    with tf.variable_scope('ntm'):
-        # softmax is applied to gt due to the requirement of
-        # softmax_cross_entropy_with_logits
-        # NOTE using the softmax cross entroy built-in to tensorflow.
-        # Originally this function is designed to take in logits of dimension
-        # [batch, num_classes] but here I'm using it as [len_sequence,
-        # num_features]
-        # NOTE the output loss is a 1D vector of shape [len_sequence]
-        # I'll need to decide how to pair this with backprop
-        loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(output_logits,
-            tf.nn.softmax(gt))) / FLAGS.sequence_length
-        tf.summary.scalar('loss', loss)
-    # get the gradient
-        tvars = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(loss, tvars),
-                FLAGS.max_gradient_norm)
-        optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
-                decay=FLAGS.decay, momentum=FLAGS.momentum)
-        train_op = optimizer.apply_gradients(
-                zip(grads, tvars),
-                global_step = tf.contrib.framework.get_or_create_global_step())
-        merged = tf.summary.merge_all()
-    with tf.Session() as sess:
-        print('session started')
-        writer = tf.summary.FileWriter(os.path.join(FLAGS.log_dir,
-            str(datetime.now())+FLAGS.tag), sess.graph)
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(coord=coord)
-        # initialize variables
-        sess.run(tf.initialize_all_variables())
-        print("start to run the training.")
-        """
-        1. get the statistics
-        2. get the images
-        3. extract the features
-        4. train the network
-        """
-        with open('generated_sequences.pkl', 'r') as f:
-            generated_sequences = pickle.load(f)
-        #shuffle the order
-        random.shuffle(generated_sequences)
-        #filter the short sequences
-        generated_sequences = [x for x in generated_sequences if x[-2] >=
-                FLAGS.sequence_length]
-        print('{} sequences after length filtering'.format(len(generated_sequences)))
-        #divide train/test batches
-        test_seqs = generated_sequences[:len(generated_sequences)/10]
-        train_seqs = generated_sequences[len(generated_sequences)/10:]
-        num_epochs = FLAGS.num_epochs
-        step = 0
-        for epoch in xrange(num_epochs):
-            print("training epoch {}".format(epoch))
-            random.shuffle(train_seqs)
-            print("shuffled training seqs")
-            #train
-            for seq_dir, obj_name, subseq_id, seq_len, seq in train_seqs:
-                # enqueue the filenames
-                seq = seq[:FLAGS.sequence_length]
-                feed_dict = {file_names_placeholder:
-                            [x[0] for x in seq]}
-                #print(feed_dict)
-                sess.run(enqueue_op, feed_dict=feed_dict)
-                # extract the ground truths
-                # finally it will be a 2D array
-                real_gts = np.array([np.reshape(x[-1][0], (-1)) for x in seq])
+    num_features = features_dim[1]*features_dim[2]
+    """compress input dimensions"""
+    w = tf.get_variable('input_compressor_w',
+            shape=(1,1,features_dim[-1],128), dtype=tf.float32,
+            initializer=tf.contrib.layers.xavier_initializer())
+    features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
+            name="input_compressor")
+    """the tracker"""
+    tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size)
+    inputs = tf.reshape(features, shape=[FLAGS.batch_size, FLAGS.sequence_length, -1])
+    target_ph = tf.placeholder(tf.float32,
+            shape=[FLAGS.batch_size, num_features], name="target")
+    gt_ph = tf.placeholder(tf.float32,
+        shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
+    outputs, output_logits, states = tracker(inputs, target_ph)
+    #output_logits is in [batch, seq_length, output_dim]
+    #reshape it to [batch*seq_length, output_dim]
+    """loss"""
+    loss_op = tf.reduce_sum(
+            tf.nn.softmax_cross_entropy_with_logits(
+                tf.reshape(output_logits, [-1, num_features]),
+                tf.nn.softmax(tf.reshape(gt_ph, [-1, num_features]))
+                )) / (FLAGS.sequence_length *
+                        FLAGS.batch_size)
+    tf.summary.scalar('loss', loss_op)
+    """training op"""
+    tvars = tf.trainable_variables()
+    grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
+            FLAGS.max_gradient_norm)
+    lr = tf.constant(FLAGS.learning_rate, name="learning_rate")
+    optimizer = tf.train.GradientDescentOptimizer(lr)
+    train_op = optimizer.apply_gradients(
+            zip(grads, tvars),
+            global_step = tf.contrib.framework.get_or_create_global_step())
+    merged_summary = tf.summary.merge_all()
 
-                real_loss, _, summary = sess.run((loss, train_op, merged),
-                        feed_dict = {
-                            target: real_gts[0],
-                            gt: real_gts,
-                        })
-                writer.add_summary(summary, step)
-                if step % 10 == 0:
-                    print("{}: training loss {}".format(step, real_loss))
-                step += 1
-
-        step = 0
-        accumu_loss = 0
-        for seq_dir, obj_name, subseq_id, seq_len, seq in test_seqs:
-            # enqueue the filenames
-            seq = seq[:FLAGS.sequence_length]
-            feed_dict = {file_names_placeholder:
-                        [x[0] for x in seq]}
-            sess.run(enqueue_op, feed_dict=feed_dict)
-            # extract the ground truths
-            # finally it will be a 2D array
-            real_gts = np.array([np.reshape(x[-1][0], (-1)) for x in seq])
-
-            real_loss = sess.run(loss, feed_dict = {
-                    target: real_gts[0],
-                    gt: real_gts,
-                })
-            accumu_loss += real_loss
-            step += 1
-        print("average testing loss {}".format(accumu_loss / float(step)))
-        saver = tf.train.Saver()
-        save_path = saver.save(sess, "model.ckpt")
-        print("model saved to {}".format(save_path))
-
-        sess.run(q_close_op) #close the queue
-        coord.request_stop()
-        coord.join(threads)
+    train_and_val(train_op, loss_op, merged_summary, target_ph, gt_ph,
+            file_names_placeholder, enqueue_op, q_close_op)
 
 if __name__ == '__main__':
     if (FLAGS.test_read_imgs):
