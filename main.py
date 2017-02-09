@@ -98,6 +98,7 @@ def read_imgs(batch_size):
     batch_img = tf.train.batch([my_img],
             batch_size = batch_size,
             num_threads = 1)
+    tf.summary.image('batch_img', batch_img, max_outputs=batch_size)
     return enqueue_placeholder, enqueue_op, queue_close_op, batch_img
 
 def test_read_imgs():
@@ -329,7 +330,13 @@ def main(_):
             shape=[FLAGS.batch_size, num_features], name="target")
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
+    tf.summary.image("ground_truth", tf.reshape(gt_ph,
+        [-1,features_dim[1],features_dim[2],1]),
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
     outputs, output_logits, states, debugs = tracker(inputs, target_ph)
+    tf.summary.image("outputs", tf.reshape(outputs,
+        [-1,features_dim[1],features_dim[2],1]),
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
     #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]

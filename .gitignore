@@ -9,3 +9,4 @@ checkpoint
 *.ckpt.index
 *.ckpt.meta
 *.pyc
+matcher_test

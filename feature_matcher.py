@@ -1,5 +1,7 @@
 import tensorflow as tf
+from PIL import Image
 import numpy as np
+import os
 from vgg import vgg_16
 """
 match the features with the ground truth
@@ -35,7 +37,7 @@ def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
     for layer_name in layers:
         im_w, im_h = img_size
         _, height, width, _ = layer_dims[layer_name]
-        heat_map = - np.ones((height, width))
+        heat_map = np.zeros((height, width))
         iou_map = np.ndarray(shape=(height, width), dtype=float)
         for x in xrange(width):
             for y in xrange(height):
@@ -48,14 +50,17 @@ def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
                 ymin = max(priorbox[0][1], bbox[0][1])
                 ymax = min(priorbox[1][1], bbox[1][1])
                 # calculate the area of intersection rectangle
-                area_i = max((xmax - xmin)*(ymax - ymin), 0)
-                # the area of union
-                area_u = (priorbox[1][0] - priorbox[0][0]) * \
-                        (priorbox[1][1] - priorbox[0][1]) + \
-                        (bbox[1][0] - bbox[0][0]) * \
-                        (bbox[1][1] - bbox[0][1])
-                #IoU
-                iou = area_i / float(area_u)
+                area_i = max(xmax - xmin,0)*max(ymax - ymin,0)
+                if area_i == 0:
+                    iou = 0
+                else:
+                    # the area of union
+                    area_u = (priorbox[1][0] - priorbox[0][0]) * \
+                            (priorbox[1][1] - priorbox[0][1]) + \
+                            (bbox[1][0] - bbox[0][0]) * \
+                            (bbox[1][1] - bbox[0][1]) - area_i
+                    #IoU
+                    iou = area_i / float(area_u)
                 #print('iou: {}'.format(iou))
                 iou_map[y][x] = iou
                 if iou > 0.5:
@@ -69,15 +74,19 @@ def matches(layer_dims, layers, img_size, bbox, threshold = 0.5):
 def main():
     VGG_sizes, _ = get_vgg_sizes()
     #print(VGG_sizes)
-    heatmaps, ious = matches(VGG_sizes, ['conv2_1', 'conv3_3', 'conv4_3', 'conv5_3'], (1280, 720),
+    layer_names = ['conv2_1', 'conv3_3', 'conv4_3', 'conv5_3']
+    heatmaps, ious = matches(VGG_sizes, layer_names, (1280, 720),
             [(323, 216), (1050, 428)])
-    for iou_map in ious:
-        w, h = iou_map.shape
-        for x in xrange(w):
-            for y in xrange(h):
-                if iou_map[y][x] > 0.5:
-                    print('iou: {}'.format(iou_map[y][x]))
-    #print(heatmaps)
+    for idx, iou_map in enumerate(ious):
+        Image.fromarray(iou_map).convert('RGB').save(os.path.join('matcher_test', layer_names[idx]+'.jpg'))
+        Image.fromarray(heatmaps[idx]).convert('RGB').save(os.path.join('matcher_test', layer_names[idx]+'bin.jpg'))
+        #print(iou_map)
+        #w, h = iou_map.shape
+        #for y in xrange(h):
+        #    for x in xrange(w):
+        #        if iou_map[y][x] > 0.5:
+        #            print('iou: {}'.format(iou_map[y][x]))
+    #print(np.array(heatmaps))
 
 if __name__ == '__main__':
     main()
