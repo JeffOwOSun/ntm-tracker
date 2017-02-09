@@ -152,8 +152,8 @@ class NTMCell(object):
                 gamma = tf.expand_dims(tf.add(tf.nn.softplus(gamma),
                     tf.constant(1.0), name="gamma"),-1)
                 powed_w_conv = tf.pow(w_conv, gamma, name="powed_w_conv")
-                w = powed_w_conv / tf.reduce_sum(powed_w_conv, axis=2,
-                        keep_dims=True)
+                w = tf.div(powed_w_conv, tf.reduce_sum(powed_w_conv, axis=2,
+                        keep_dims=True) + 1e-3, name='w')
 
                 #split the read and write head weights
                 #w is [batch, num_heads, mem_size]
@@ -198,7 +198,27 @@ class NTMCell(object):
                 'controller_state': controller_state,
             }
 
-        return ntm_output, ntm_output_logit, state
+            debug = {
+                    'k': k,
+                    'gamma': gamma,
+                    'add': add,
+                    'erase': erase,
+                    'bega': beta,
+                    'g': g,
+                    'sw': sw,
+                    'w_content_focused': w_content_focused,
+                    'w_gated': w_gated,
+                    'w_conv': w_conv,
+                    'w': w,
+                    'w_read': w_read,
+                    'w_write': w_write,
+                    'M': M,
+                    'M_prev': M_prev,
+                    'M_write': M_write,
+                    'M_erase': M_erase,
+                    }
+
+        return ntm_output, ntm_output_logit, state, debug
 
     def zero_state(self, batch_size):
         """

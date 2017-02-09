@@ -42,6 +42,8 @@ flags.DEFINE_float("decay", 0.95, "learning rate")
 flags.DEFINE_integer("hidden_size", 100, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 10, "number of LSTM cells")
 flags.DEFINE_string("tag", "", "tag for the log record")
+flags.DEFINE_integer("log_interval", 10, "number of epochs before log")
+flags.DEFINE_float("init_scale", 0.05, "initial range for weights")
 
 FLAGS = flags.FLAGS
 
@@ -122,6 +124,7 @@ def test_read_imgs():
 
 def train_and_val(train_op, loss, merged, target, gt,
         file_names_placeholder, enqueue_op, q_close_op, other_ops=[]):
+    check_op = tf.add_check_numerics_ops()
     with tf.Session() as sess:
         print('session started')
         writer = tf.summary.FileWriter(real_log_dir, sess.graph)
@@ -180,10 +183,10 @@ def train_and_val(train_op, loss, merged, target, gt,
                             gt: real_gts,
                         })
                 real_loss, _, summary = ret[:3]
-                #import pdb; pdb.set_trace()
                 writer.add_summary(summary, step)
-                if step % 10 == 0:
+                if step % FLAGS.log_interval == 0:
                     print("{}: training loss {}".format(step, real_loss))
+                #import pdb; pdb.set_trace()
                 step += 1
 
         step = 0
@@ -277,8 +280,10 @@ def lstm_only():
     tvars = tf.trainable_variables()
     grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
             FLAGS.max_gradient_norm)
-    lr = tf.constant(FLAGS.learning_rate, name="learning_rate")
-    optimizer = tf.train.GradientDescentOptimizer(lr)
+    #lr = tf.constant(FLAGS.learning_rate, name="learning_rate")
+    #optimizer = tf.train.GradientDescentOptimizer(lr)
+    optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
+            decay=FLAGS.decay, momentum=FLAGS.momentum)
     train_op = optimizer.apply_gradients(
             zip(grads, tvars),
             global_step = tf.contrib.framework.get_or_create_global_step())
@@ -313,8 +318,10 @@ def main(_):
     features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
             name="input_compressor")
     """the tracker"""
+    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
     tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size,
-            controller_num_layers=FLAGS.num_layers)
+            controller_num_layers=FLAGS.num_layers,
+            initializer=initializer)
     inputs = tf.reshape(features, shape=[FLAGS.batch_size,
         FLAGS.sequence_length, -1], name="reshaped_inputs")
     #print('reshaped inputs:', inputs.get_shape())
@@ -322,7 +329,7 @@ def main(_):
             shape=[FLAGS.batch_size, num_features], name="target")
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
-    outputs, output_logits, states = tracker(inputs, target_ph)
+    outputs, output_logits, states, debugs = tracker(inputs, target_ph)
     #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
@@ -349,7 +356,7 @@ def main(_):
 
     train_and_val(train_op, loss_op, merged_summary, target_ph, gt_ph,
             file_names_placeholder, enqueue_op, q_close_op, [outputs,
-                output_logits, states])
+                output_logits, states, debugs])
 
 if __name__ == '__main__':
     if (FLAGS.test_read_imgs):
