@@ -20,13 +20,12 @@ class NTMTracker(object):
         self.outputs = []
         self.output_logits = []
         self.states = []
+        state = self.cell.zero_state(self.batch_size)
+        self.states.append(state)
+        indicator = target
         with tf.variable_scope(scope or 'ntm-tracker'):
             for idx in xrange(self.sequence_length):
-                if idx == 0:
-                    state = self.cell.zero_state(self.batch_size)
-                    self.states.append(state)
-                    indicator = target
-                else:
+                if idx > 0:
                     tf.get_variable_scope().reuse_variables()
                     indicator = tf.zeros(shape=target.get_shape(),
                             name="dummy-target")

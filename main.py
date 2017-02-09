@@ -40,18 +40,14 @@ flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
 flags.DEFINE_float("momentum", 0.9, "learning rate")
 flags.DEFINE_float("decay", 0.95, "learning rate")
 flags.DEFINE_integer("hidden_size", 100, "number of LSTM cells")
-flags.DEFINE_integer("num_layers", 100, "number of LSTM cells")
+flags.DEFINE_integer("num_layers", 10, "number of LSTM cells")
 flags.DEFINE_string("tag", "", "tag for the log record")
 
 FLAGS = flags.FLAGS
 
 random.seed(42)
 
-def create_ntm(inputs, target_first_frame, sequence_length=20):
-    ntm = NTMTracker(max_sequence_length=sequence_length)
-    outputs, output_logits, states = ntm(inputs, target_first_frame)
-    return outputs, output_logits, states
-
+real_log_dir = os.path.join(FLAGS.log_dir, str(datetime.now())+FLAGS.tag)
 
 def create_vgg(inputs, feature_layer):
     net, end_points = vgg_16(inputs)
@@ -103,6 +99,7 @@ def read_imgs(batch_size):
     return enqueue_placeholder, enqueue_op, queue_close_op, batch_img
 
 def test_read_imgs():
+    #TODO: update this function
     with tf.Session() as sess:
         test_img_name = '/home/jowos/data/ILSVRC2015/Data/VID/train/a/ILSVRC2015_train_00139005/000379.JPEG'
         enqueue_placeholder, enqueue_op, queue_close_op, batch_img = read_imgs(20)
@@ -124,11 +121,10 @@ def test_read_imgs():
         coord.join(threads)
 
 def train_and_val(train_op, loss, merged, target, gt,
-        file_names_placeholder, enqueue_op, q_close_op):
+        file_names_placeholder, enqueue_op, q_close_op, other_ops=[]):
     with tf.Session() as sess:
         print('session started')
-        writer = tf.summary.FileWriter(os.path.join(FLAGS.log_dir,
-                str(datetime.now())+FLAGS.tag), sess.graph)
+        writer = tf.summary.FileWriter(real_log_dir, sess.graph)
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
         # initialize variables
@@ -177,11 +173,14 @@ def train_and_val(train_op, loss, merged, target, gt,
                 # extract the ground truths
                 # finally it will be a 2D array
 
-                real_loss, _, summary = sess.run((loss, train_op, merged),
-                    feed_dict = {
-                        target: real_gts[:,0,:],
-                        gt: real_gts,
-                    })
+                ret = sess.run(
+                        [loss, train_op, merged]+other_ops,
+                        feed_dict = {
+                            target: real_gts[:,0,:],
+                            gt: real_gts,
+                        })
+                real_loss, _, summary = ret[:3]
+                #import pdb; pdb.set_trace()
                 writer.add_summary(summary, step)
                 if step % 10 == 0:
                     print("{}: training loss {}".format(step, real_loss))
@@ -192,7 +191,7 @@ def train_and_val(train_op, loss, merged, target, gt,
         index = 0
         while index < len(test_seqs):
             frame_names, real_gts, index = get_batch(index,
-                    FLAGS.batch_size, FLAGS.seq_length, test_seqs)
+                    FLAGS.batch_size, FLAGS.sequence_length, test_seqs)
             feed_dict = {file_names_placeholder:
                         frame_names}
             sess.run(enqueue_op, feed_dict=feed_dict)
@@ -205,7 +204,8 @@ def train_and_val(train_op, loss, merged, target, gt,
             step += 1
         print("average testing loss {}".format(accumu_loss / float(step)))
         saver = tf.train.Saver()
-        save_path = saver.save(sess, "model.ckpt")
+        save_path = saver.save(sess, os.path.join(real_log_dir,
+            "model.ckpt"))
         print("model saved to {}".format(save_path))
 
         sess.run(q_close_op) #close the queue
@@ -218,7 +218,7 @@ def lstm_only():
     create the model
     """
     """get the inputs"""
-    file_names_placeholder, enqueue_op, q_close_op, batch_img = read_imgs(FLAGS.sequence_length)
+    file_names_placeholder, enqueue_op, q_close_op, batch_img = read_imgs(FLAGS.batch_size*FLAGS.sequence_length)
     vgg_graph_def = tf.GraphDef()
     with open(FLAGS.vgg_model_frozen, "rb") as f:
         vgg_graph_def.ParseFromString(f.read())
@@ -239,21 +239,21 @@ def lstm_only():
     cell = tf.contrib.rnn.MultiRNNCell(
             [lstm_cell] * FLAGS.num_layers, state_is_tuple=True)
     """initial state"""
-    initial_state = cell.zero_state(1, tf.float32)
+    initial_state = cell.zero_state(FLAGS.batch_size, tf.float32)
 
     #TODO: make sure this reshape is working as expected
     """inputs and outputs to the lstm"""
-    inputs = tf.reshape(features, shape=[1, FLAGS.sequence_length, -1])
+    inputs = tf.reshape(features, shape=[FLAGS.batch_size, FLAGS.sequence_length, -1])
     target_ph = tf.placeholder(tf.float32,
-            shape=[1, num_features], name="target")
+            shape=[FLAGS.batch_size, num_features], name="target")
     dummy_target = tf.constant(0.0, shape=target_ph.get_shape())
     gt_ph = tf.placeholder(tf.float32,
-        shape=[FLAGS.sequence_length, num_features], name="ground_truth")
+        shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
     """actually build the lstm"""
     print("building lstm")
     outputs = []
     state = initial_state
-    with tf.variable_scope("ntm-tracker"):
+    with tf.variable_scope("lstm-tracker"):
         for time_step in range(FLAGS.sequence_length):
             if time_step > 0:
                 tf.get_variable_scope().reuse_variables()
@@ -313,8 +313,10 @@ def main(_):
     features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
             name="input_compressor")
     """the tracker"""
-    tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size)
-    inputs = tf.reshape(features, shape=[FLAGS.batch_size, FLAGS.sequence_length, -1])
+    tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size,
+            controller_num_layers=FLAGS.num_layers)
+    inputs = tf.reshape(features, shape=[FLAGS.batch_size,
+        FLAGS.sequence_length, -1], name="reshaped_inputs")
     #print('reshaped inputs:', inputs.get_shape())
     target_ph = tf.placeholder(tf.float32,
             shape=[FLAGS.batch_size, num_features], name="target")
@@ -332,6 +334,8 @@ def main(_):
                 )) / (FLAGS.sequence_length *
                         FLAGS.batch_size)
     tf.summary.scalar('loss', loss_op)
+    tf.summary.tensor_summary('outputs_summary', outputs)
+    tf.summary.tensor_summary('output_logits_summary', output_logits)
     """training op"""
     tvars = tf.trainable_variables()
     grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
@@ -344,7 +348,8 @@ def main(_):
     merged_summary = tf.summary.merge_all()
 
     train_and_val(train_op, loss_op, merged_summary, target_ph, gt_ph,
-            file_names_placeholder, enqueue_op, q_close_op)
+            file_names_placeholder, enqueue_op, q_close_op, [outputs,
+                output_logits, states])
 
 if __name__ == '__main__':
     if (FLAGS.test_read_imgs):

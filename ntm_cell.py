@@ -48,7 +48,7 @@ class NTMCell(object):
                 state_is_tuple=True)
 
 
-    def __call__(self, inputs, target, state, scope=None):
+    def __call__(self, inputs, target, prev_state, scope=None):
         """
         Args:
             inputs: Input should be extracted features of VGG network.
@@ -79,14 +79,14 @@ class NTMCell(object):
             """
             #memory value of previous timestep
             #[batch, mem_size, mem_dim]
-            M_prev = state['M']
-            w_prev = state['w']
-            read_prev = state['read'] #read value history
+            M_prev = prev_state['M']
+            w_prev = prev_state['w']
+            read_prev = prev_state['read'] #read value history
             #last output. It's a list because controller is an LSTM with multiple cells
             """
             controller state
             """
-            controller_state = state['controller_state']
+            controller_state = prev_state['controller_state']
 
             #shape of controller_output: [batch, controller_hidden_dim]
             #shape of inputs: [batch, num_channels*num_features]
@@ -95,100 +95,101 @@ class NTMCell(object):
             read_prev = tf.reshape(read_prev,
                     [-1, self.read_head_size*self.mem_dim])
             controller_output, controller_state = self.controller(
-                    tf.concat_v2([inputs, target, read_prev], 1), controller_state)
+                    tf.concat_v2([inputs, target, read_prev], 1),
+                    controller_state, scope="lstm-controller")
 
             # build a memory
             # the memory module simply morph the controller output
 
             """addressing"""
             # calculate the sizes of parameters
-            num_heads = self.read_head_size+self.write_head_size
+            with tf.variable_scope("addressing"):
+                num_heads = self.read_head_size+self.write_head_size
 
-            k_size = self.mem_dim * num_heads
-            beta_size = 1 * num_heads
-            g_size = 1 * num_heads
-            sw_size = (self.shift_range * 2 + 1) * num_heads
-            gamma_size = 1 * num_heads
-            erase_size = self.mem_dim * self.write_head_size
-            add_size = self.mem_dim * self.write_head_size
-            # convert the output into the memory_controls matrix ready to be
-            # split into control weights. [batch, memory_control_size]
-            with tf.variable_scope("unpack_mem_params") as scope:
+                k_size = self.mem_dim * num_heads
+                beta_size = 1 * num_heads
+                g_size = 1 * num_heads
+                sw_size = (self.shift_range * 2 + 1) * num_heads
+                gamma_size = 1 * num_heads
+                erase_size = self.mem_dim * self.write_head_size
+                add_size = self.mem_dim * self.write_head_size
+                # convert the output into the memory_controls matrix ready to be
+                # split into control weights. [batch, memory_control_size]
                 memory_controls = _linear(controller_output,
                     k_size+beta_size+g_size+sw_size+gamma_size+erase_size+add_size,
-                    True, scope=scope)
+                    True, scope="unpack_mem_params")
 
-            k, beta, g, sw, gamma, erase, add = array_ops.split(memory_controls,
-                    [k_size, beta_size, g_size, sw_size, gamma_size, erase_size,
-                        add_size], axis=1)
+                k, beta, g, sw, gamma, erase, add = array_ops.split(memory_controls,
+                        [k_size, beta_size, g_size, sw_size, gamma_size, erase_size,
+                            add_size], axis=1)
 
-            #k is now in [batch, mem_dim * num_heads]
-            k = tf.tanh(tf.reshape(k, [-1, num_heads, self.mem_dim]), name='k')
-            #cos similarity [batch, num_heads, mem_size]
-            similarity = batched_smooth_cosine_similarity(M_prev, k)
-            #focus by content, result [batch, num_heads, mem_size]
-            #beta is [batch, num_heads]
-            beta = tf.expand_dims(tf.nn.softplus(beta), -1)
-            w_content_focused = tf.nn.softmax(tf.multiply(similarity, beta),
-                    name="w_content_focused")
-            #import pdb; pdb.set_trace()
-            #g [batch, num_heads]
-            g = tf.expand_dims(tf.sigmoid(g, name='g'), -1)
-            #w_prev [batch, num_heads, mem_size]
-            w_gated = tf.add_n([
-                tf.multiply(w_content_focused, g),
-                tf.multiply(w_prev, (1.0 - g)),
-            ])
-            #convolution shift
-            #sw is now in [batch, num_heads * shift_space]
-            #afterwards, sw is in [batch, num_heads, shift_space]
-            sw = tf.nn.softmax(tf.reshape(sw, [-1, num_heads, self.shift_range * 2 + 1]), name="shift_weight")
+                #k is now in [batch, mem_dim * num_heads]
+                k = tf.tanh(tf.reshape(k, [-1, num_heads, self.mem_dim]), name='k')
+                #cos similarity [batch, num_heads, mem_size]
+                similarity = batched_smooth_cosine_similarity(M_prev, k)
+                #focus by content, result [batch, num_heads, mem_size]
+                #beta is [batch, num_heads]
+                beta = tf.expand_dims(tf.nn.softplus(beta, name="beta"), -1)
+                w_content_focused = tf.nn.softmax(tf.multiply(similarity, beta),
+                        name="w_content_focused")
+                #import pdb; pdb.set_trace()
+                #g [batch, num_heads]
+                g = tf.expand_dims(tf.sigmoid(g, name='g'), -1)
+                #w_prev [batch, num_heads, mem_size]
+                w_gated = tf.add_n([
+                    tf.multiply(w_content_focused, g),
+                    tf.multiply(w_prev, (1.0 - g)),
+                ], name="w_gated")
+                #convolution shift
+                #sw is now in [batch, num_heads * shift_space]
+                #afterwards, sw is in [batch, num_heads, shift_space]
+                sw = tf.nn.softmax(tf.reshape(sw, [-1, num_heads, self.shift_range * 2 + 1]), name="shift_weight")
 
-            #[batch, num_heads, mem_size]
-            w_conv = batched_circular_convolution(w_gated, sw)
+                #[batch, num_heads, mem_size]
+                w_conv = batched_circular_convolution(w_gated, sw, name="w_conv")
 
-            #sharpening
-            gamma = tf.expand_dims(tf.add(tf.nn.softplus(gamma),
-                tf.constant(1.0)),-1)
-            powed_w_conv = tf.pow(w_conv, gamma)
-            w = powed_w_conv / tf.reduce_sum(powed_w_conv, axis=2,
-                    keep_dims=True)
+                #sharpening
+                gamma = tf.expand_dims(tf.add(tf.nn.softplus(gamma),
+                    tf.constant(1.0), name="gamma"),-1)
+                powed_w_conv = tf.pow(w_conv, gamma, name="powed_w_conv")
+                w = powed_w_conv / tf.reduce_sum(powed_w_conv, axis=2,
+                        keep_dims=True)
 
-            #split the read and write head weights
-            #w is [batch, num_heads, mem_size]
-            w_read = tf.slice(w, [0,0,0], [-1,self.read_head_size,-1])
-            w_write = tf.slice(w, [0,self.write_head_size,0], [-1,-1,-1])
+                #split the read and write head weights
+                #w is [batch, num_heads, mem_size]
+                w_read = tf.slice(w, [0,0,0],
+                        [-1,self.read_head_size,-1], name="w_read")
+                w_write = tf.slice(w, [0,self.write_head_size,0], [-1,-1,-1],
+                        name="w_write")
 
-            #memory value of previous timestep M_prev is [batch, mem_size, mem_dim]
-            #the read result
-            read = tf.matmul(w_read, M_prev)
+                #memory value of previous timestep M_prev is [batch, mem_size, mem_dim]
+                #the read result
+                read = tf.matmul(w_read, M_prev, name="read")
 
-            #now the writing
-            #erase [batch, write_head_size, mem_dim]
-            erase = 1.0 - tf.sigmoid(tf.reshape(erase,
-                [-1,self.write_head_size,self.mem_dim]), name="erase")
-            add = tf.tanh(tf.reshape(add,
-                [-1,self.write_head_size,self.mem_dim]), name="add")
-            #w_write [batch, write_head_size, mem_size]
-            #M_erase should be [batch, mem_size, mem_dim]
-            #calculate M_erase by outer product of w_write and erase
-            M_erase = \
-            tf.reduce_prod(tf.matmul(tf.expand_dims(w_write,3),
-                tf.expand_dims(erase,2)), axis=1)
-            #calculate M_write by outer product of w_write and add
-            M_write = \
-            tf.reduce_sum(tf.matmul(tf.expand_dims(w_write,3),
-                tf.expand_dims(add,2)), axis=1)
+                #now the writing
+                #erase [batch, write_head_size, mem_dim]
+                erase = 1.0 - tf.sigmoid(tf.reshape(erase,
+                    [-1,self.write_head_size,self.mem_dim]), name="erase")
+                add = tf.tanh(tf.reshape(add,
+                    [-1,self.write_head_size,self.mem_dim]), name="add")
+                #w_write [batch, write_head_size, mem_size]
+                #M_erase should be [batch, mem_size, mem_dim]
+                #calculate M_erase by outer product of w_write and erase
+                M_erase = \
+                tf.reduce_prod(tf.matmul(tf.expand_dims(w_write,3),
+                    tf.expand_dims(erase,2)), axis=1, name="M_erase")
+                #calculate M_write by outer product of w_write and add
+                M_write = \
+                tf.reduce_sum(tf.matmul(tf.expand_dims(w_write,3),
+                    tf.expand_dims(add,2)), axis=1, name="M_write")
 
-            M = M_prev * M_erase + M_write
+                M = M_prev * M_erase + M_write
 
             """ get the real output """
             # by extracting the output tensors from the controller_output, and
             # applying a matrix to change the dimension to target
-            with tf.variable_scope("unpack_output") as scope:
-                ntm_output_logit = _linear(controller_output, self.output_dim,
-                        True, scope=scope)
-            ntm_output= tf.nn.softmax(ntm_output_logit)
+            ntm_output_logit = _linear(controller_output, self.output_dim, True, scope="unpack_output")
+            ntm_output= tf.nn.softmax(ntm_output_logit, name="ntm_output")
 
             state = {
                 'M': M,

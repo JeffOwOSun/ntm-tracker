@@ -132,7 +132,7 @@ def Linear(input_, output_size, stddev=0.5,
         else:
             return output
 
-def batched_smooth_cosine_similarity(memory, keys):
+def batched_smooth_cosine_similarity(memory, keys, name=None, scope=None):
     """batched version of smooth cosine similarity
 
     Args:
@@ -142,15 +142,16 @@ def batched_smooth_cosine_similarity(memory, keys):
     return:
         similarity: [batch, num_heads, mem_size]
     """
-    #memory_norm [batch, mem_size, 1]
-    memory_norm = tf.sqrt(tf.reduce_sum(tf.pow(memory, 2),2,keep_dims=True))
-    #keys_norm [batch, num_heads, 1]
-    keys_norm = tf.sqrt(tf.reduce_sum(tf.pow(keys, 2),2,keep_dims=True))
-    #dot_product [batch, num_heads, mem_size]
-    dot_product = tf.matmul(keys, memory, transpose_b=True)
-    norm_product = tf.matmul(keys_norm, memory_norm,
-            transpose_b=True)
-    return tf.div(dot_product, norm_product)
+    with tf.variable_scope(scope or "batched_smooth_cos_similarity"):
+        #memory_norm [batch, mem_size, 1]
+        memory_norm = tf.sqrt(tf.reduce_sum(tf.pow(memory, 2),2,keep_dims=True))
+        #keys_norm [batch, num_heads, 1]
+        keys_norm = tf.sqrt(tf.reduce_sum(tf.pow(keys, 2),2,keep_dims=True))
+        #dot_product [batch, num_heads, mem_size]
+        dot_product = tf.matmul(keys, memory, transpose_b=True)
+        norm_product = tf.matmul(keys_norm, memory_norm,
+                transpose_b=True)
+        return tf.div(dot_product, norm_product + 1e-3, name=name)
 
 
 def smooth_cosine_similarity(m, v):
@@ -172,7 +173,7 @@ def smooth_cosine_similarity(m, v):
     similarity = tf.div(tf.reshape(m_dot_v, [-1]), m_norm * v_norm + 1e-3)
     return similarity
 
-def batched_circular_convolution(tensor, kernel):
+def batched_circular_convolution(tensor, kernel, name=None, scope=None):
     """
     batched version of circular convolution
     the first two dimensions of the input are just batch sizes, and on slice
@@ -193,20 +194,20 @@ def batched_circular_convolution(tensor, kernel):
     [batch, num_heads, mem_size, 1]
     4. remove the last dimension
     """
-    #shift_space is always odd
-    shift_space = kernel.get_shape().as_list()[-1]
-    start = -shift_space/2
-    stop = shift_space + start
-    #if shift_space is 5, then xrange(-2, 3), (-2,-1,0,1,2)
-    #augmented tensor, with 4 dimensions
-    tensor_aug = tf.stack([circular_shift(tensor, shift) for shift in
-        xrange(start, stop)], axis=-1)
-    #add one extra dimension to the kernel
-    kernel_4d = tf.expand_dims(kernel, -1)
-    #do batch matmul
-    result = tf.matmul(tensor_aug, kernel_4d)
-    return tf.squeeze(result)
-
+    with tf.variable_scope(scope or "batched_circular_convolution"):
+        #shift_space is always odd
+        shift_space = kernel.get_shape().as_list()[-1]
+        start = -shift_space/2
+        stop = shift_space + start
+        #if shift_space is 5, then xrange(-2, 3), (-2,-1,0,1,2)
+        #augmented tensor, with 4 dimensions
+        tensor_aug = tf.stack([circular_shift(tensor, shift) for shift in
+            xrange(start, stop)], axis=-1)
+        #add one extra dimension to the kernel
+        kernel_4d = tf.expand_dims(kernel, -1)
+        #do batch matmul
+        result = tf.matmul(tensor_aug, kernel_4d)
+        return tf.squeeze(result, name=name)
 
 def circular_shift(tensor, shift):
     """
