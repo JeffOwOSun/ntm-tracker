@@ -253,6 +253,9 @@ def lstm_only():
     dummy_target = tf.constant(0.0, shape=target_ph.get_shape())
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
+    tf.summary.image("ground_truth", tf.reshape(gt_ph,
+        [-1,features_dim[1],features_dim[2],1]),
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
     """actually build the lstm"""
     print("building lstm")
     outputs = []
@@ -273,6 +276,9 @@ def lstm_only():
         "softmax_w", [FLAGS.hidden_size, num_features], dtype=tf.float32)
     softmax_b = tf.get_variable("softmax_b", [num_features], dtype=tf.float32)
     output_logits = tf.matmul(output, softmax_w) + softmax_b
+    tf.summary.image("outputs", tf.reshape(tf.nn.softmax(output_logits),
+        [-1,features_dim[1],features_dim[2],1]),
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
     """loss"""
     loss_op = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(output_logits,
         tf.nn.softmax(gt_ph))) / FLAGS.sequence_length
