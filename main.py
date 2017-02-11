@@ -51,6 +51,9 @@ random.seed(42)
 
 real_log_dir = os.path.join(FLAGS.log_dir, str(datetime.now())+FLAGS.tag)
 
+VGG_MEAN = tf.constant([123.68, 116.78, 103.94], dtype=tf.float32,
+        shape=[1,1,3], name="VGG_MEAN")
+
 def create_vgg(inputs, feature_layer):
     net, end_points = vgg_16(inputs)
     print(end_points.keys())
@@ -93,7 +96,8 @@ def read_imgs(batch_size):
     # here value represents one instance of image
     my_img = tf.image.decode_jpeg(value)
     my_img = tf.reshape(tf.image.resize_images(my_img, [224, 224]), (224, 224, 3))
-    my_img = tf.image.per_image_standardization(my_img)
+    #my_img = tf.image.per_image_standardization(my_img)
+    my_img = my_img - VGG_MEAN
     # convert the queue-based image stream into a batch
     batch_img = tf.train.batch([my_img],
             batch_size = batch_size,
