@@ -15,7 +15,7 @@ from tensorflow.python.ops import nn_ops
 from ops import batched_smooth_cosine_similarity,  batched_circular_convolution
 
 class NTMCell(object):
-    def __init__(self, mem_size=128, mem_dim=20, shift_range=1,
+    def __init__(self, output_dim, mem_size=128, mem_dim=20, shift_range=1,
             controller_hidden_size=100, controller_num_layers=10,
             write_head_size=3, read_head_size=3):
         """
@@ -39,6 +39,7 @@ class NTMCell(object):
         self.write_head_size = write_head_size
         self.read_head_size = read_head_size
         self.shift_range = shift_range
+        self.output_dim = output_dim
 
         controller_cell = tf.contrib.rnn.BasicLSTMCell(
                 controller_hidden_size, forget_bias=0.0,
@@ -48,7 +49,7 @@ class NTMCell(object):
                 state_is_tuple=True)
 
 
-    def __call__(self, inputs, target, prev_state, scope=None):
+    def __call__(self, inputs, prev_state, scope=None):
         """
         Args:
             inputs: Input should be extracted features of VGG network.
@@ -71,7 +72,6 @@ class NTMCell(object):
         1. build the controller chain
         2. build the memory module
         """
-        self.output_dim = target.get_shape().as_list()[-1]
         with tf.variable_scope(scope or 'ntm-cell'):
 
             """
@@ -95,7 +95,7 @@ class NTMCell(object):
             read_prev = tf.reshape(read_prev,
                     [-1, self.read_head_size*self.mem_dim])
             controller_output, controller_state = self.controller(
-                    tf.concat_v2([inputs, target, read_prev], 1),
+                    tf.concat_v2([inputs, read_prev], 1),
                     controller_state, scope="lstm-controller")
 
             # build a memory

@@ -44,6 +44,8 @@ flags.DEFINE_integer("num_layers", 10, "number of LSTM cells")
 flags.DEFINE_string("tag", "", "tag for the log record")
 flags.DEFINE_integer("log_interval", 10, "number of epochs before log")
 flags.DEFINE_float("init_scale", 0.05, "initial range for weights")
+flags.DEFINE_integer("read_head_size", 3, "number of read heads")
+flags.DEFINE_integer("write_head_size", 3, "number of write heads")
 
 FLAGS = flags.FLAGS
 
@@ -331,8 +333,9 @@ def main(_):
     """the tracker"""
     initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
     tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size,
-            controller_num_layers=FLAGS.num_layers,
-            initializer=initializer)
+            num_features, controller_num_layers=FLAGS.num_layers,
+            initializer=initializer, read_head_size=FLAGS.read_head_size,
+            write_head_size=FLAGS.write_head_size)
     inputs = tf.reshape(features, shape=[FLAGS.batch_size,
         FLAGS.sequence_length, -1], name="reshaped_inputs")
     #print('reshaped inputs:', inputs.get_shape())
@@ -353,8 +356,8 @@ def main(_):
     """loss"""
     loss_op = tf.reduce_sum(
             tf.nn.softmax_cross_entropy_with_logits(
-                tf.reshape(output_logits, [-1, num_features]),
-                tf.nn.softmax(tf.reshape(gt_ph, [-1, num_features]))
+                logits=tf.reshape(output_logits, [-1, num_features]),
+                labels=tf.nn.softmax(tf.reshape(gt_ph, [-1, num_features]))
                 )) / (FLAGS.sequence_length *
                         FLAGS.batch_size)
     tf.summary.scalar('loss', loss_op)

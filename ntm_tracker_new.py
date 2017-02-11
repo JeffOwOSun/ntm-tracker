@@ -2,7 +2,7 @@ from ntm_cell import NTMCell
 import tensorflow as tf
 
 class NTMTracker(object):
-    def __init__(self, sequence_length=20, batch_size=32,
+    def __init__(self, sequence_length, batch_size, output_dim,
             initializer=tf.random_uniform_initializer(-0.1,0.1),
             **kwargs):
         """
@@ -11,7 +11,8 @@ class NTMTracker(object):
         """
         self.sequence_length = sequence_length
         self.batch_size = batch_size
-        self.cell = NTMCell(**kwargs)
+        self.output_dim = output_dim
+        self.cell = NTMCell(output_dim, **kwargs)
         self.initializer = initializer
 
     def __call__(self, inputs, target, scope=None):
@@ -35,7 +36,7 @@ class NTMTracker(object):
                             name="dummy-target")
 
                 ntm_output, ntm_output_logit, state, debug = self.cell(
-                        inputs[:,idx,:], indicator, state)
+                        tf.concat_v2([inputs[:,idx,:], indicator], 1), state)
 
                 self.states.append(state)
                 self.debugs.append(debug)
