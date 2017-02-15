@@ -4,6 +4,7 @@ import tensorflow as tf
 class NTMTracker(object):
     def __init__(self, sequence_length, batch_size, output_dim,
             initializer=tf.random_uniform_initializer(-0.1,0.1),
+            two_step=False,
             **kwargs):
         """
         ntm tracker core.
@@ -14,6 +15,7 @@ class NTMTracker(object):
         self.output_dim = output_dim
         self.cell = NTMCell(output_dim, **kwargs)
         self.initializer = initializer
+        self.two_step=two_step
 
     def __call__(self, inputs, target, scope=None):
         """
@@ -27,21 +29,64 @@ class NTMTracker(object):
         self.debugs = []
         state = self.cell.zero_state(self.batch_size)
         self.states.append(state)
-        indicator = target
         with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
+            zero_switch=tf.fill([inputs.get_shape().as_list()[0],1], 0.0,
+                    name="zero_switch")
+            one_switch=tf.fill([inputs.get_shape().as_list()[0],1], 1.0,
+                    name="one_switch")
+            dummy_input=tf.zeros_like(inputs[:,0,:], dtype=tf.float32, name="dummy_input")
+            dummy_target = tf.zeros_like(target,
+                    dtype=tf.float32, name="dummy-target")
+            indicator=target
             for idx in xrange(self.sequence_length):
                 if idx > 0:
                     tf.get_variable_scope().reuse_variables()
-                    indicator = tf.zeros(shape=target.get_shape(),
-                            name="dummy-target")
+                    indicator = dummy_target
 
-                ntm_output, ntm_output_logit, state, debug = self.cell(
-                        tf.concat_v2([inputs[:,idx,:], indicator], 1), state)
+                if self.two_step:
+                    if idx == 0:
+                        #[batch_size, 1]
+                        ntm_output, ntm_output_logit, state, debug = self.cell(
+                                tf.concat_v2([zero_switch, inputs[:,idx,:],
+                                    target], 1),
+                                state)
+                        self.states.append(state)
+                        self.debugs.append(debug)
+                        self.outputs.append(ntm_output)
+                        self.output_logits.append(ntm_output_logit)
+                    else:
+                        """
+                        1. step 1, present the input
+                        """
+                        ntm_output, ntm_output_logit, state, debug = self.cell(
+                                tf.concat_v2([zero_switch, inputs[:,idx,:],
+                                    dummy_target], 1),
+                                state)
+                        self.states.append(state)
+                        self.debugs.append(debug)
+                        self.outputs.append(ntm_output)
+                        self.output_logits.append(ntm_output_logit)
+                        """
+                        1. step 2, ask for output
+                        """
+                        ntm_output, ntm_output_logit, state, debug = self.cell(
+                                tf.concat_v2([one_switch, dummy_input,
+                                    dummy_target], 1),
+                                state)
+                        self.states.append(state)
+                        self.debugs.append(debug)
+                        self.outputs.append(ntm_output)
+                        self.output_logits.append(ntm_output_logit)
+                else:
+                    ntm_output, ntm_output_logit, state, debug = self.cell(
+                            tf.concat_v2([inputs[:,idx,:], indicator], 1), state)
 
-                self.states.append(state)
-                self.debugs.append(debug)
-                self.outputs.append(ntm_output)
-                self.output_logits.append(ntm_output_logit)
+                    self.states.append(state)
+                    self.debugs.append(debug)
+                    self.outputs.append(ntm_output)
+                    self.output_logits.append(ntm_output_logit)
+        # in two step formation, the total length of the stacked output should
+        # be 2*seq_length - 1
         return tf.stack(self.outputs, axis=1, name="outputs"),\
                 tf.stack(self.output_logits, axis=1, name="output_logits"),\
                 self.states, self.debugs

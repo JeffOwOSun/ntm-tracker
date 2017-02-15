@@ -17,7 +17,7 @@ from ops import batched_smooth_cosine_similarity,  batched_circular_convolution
 class NTMCell(object):
     def __init__(self, output_dim, mem_size=128, mem_dim=20, shift_range=1,
             controller_hidden_size=100, controller_num_layers=10,
-            write_head_size=3, read_head_size=3):
+            write_head_size=3, read_head_size=3, write_first=False):
         """
         The ntm tracker core.
 
@@ -40,6 +40,7 @@ class NTMCell(object):
         self.read_head_size = read_head_size
         self.shift_range = shift_range
         self.output_dim = output_dim
+        self.write_first = write_first
 
         controller_cell = tf.contrib.rnn.BasicLSTMCell(
                 controller_hidden_size, forget_bias=0.0,
@@ -164,7 +165,8 @@ class NTMCell(object):
 
                 #memory value of previous timestep M_prev is [batch, mem_size, mem_dim]
                 #the read result
-                read = tf.matmul(w_read, M_prev, name="read")
+                #NOTE: moved to the end
+                #read = tf.matmul(w_read, M_prev, name="read")
 
                 #now the writing
                 #erase [batch, write_head_size, mem_dim]
@@ -184,6 +186,11 @@ class NTMCell(object):
                     tf.expand_dims(add,2)), axis=1, name="M_write")
 
                 M = M_prev * M_erase + M_write
+
+                if self.write_first:
+                    read = tf.matmul(w_read, M, name="read")
+                else:
+                    read = tf.matmul(w_read, M_prev, name="read")
 
             """ get the real output """
             # by extracting the output tensors from the controller_output, and

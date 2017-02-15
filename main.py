@@ -46,6 +46,8 @@ flags.DEFINE_integer("log_interval", 10, "number of epochs before log")
 flags.DEFINE_float("init_scale", 0.05, "initial range for weights")
 flags.DEFINE_integer("read_head_size", 3, "number of read heads")
 flags.DEFINE_integer("write_head_size", 3, "number of write heads")
+flags.DEFINE_boolean("two_step", False, "present the input in a 2-step manner")
+flags.DEFINE_boolean("write_first", False, "write before read")
 
 FLAGS = flags.FLAGS
 
@@ -261,7 +263,8 @@ def lstm_only():
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
     tf.summary.image("ground_truth", tf.reshape(gt_ph,
         [-1,features_dim[1],features_dim[2],1]),
-        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length*(2 if
+            FLAGS.two_step else 1))
     """actually build the lstm"""
     print("building lstm")
     outputs = []
@@ -284,7 +287,8 @@ def lstm_only():
     output_logits = tf.matmul(output, softmax_w) + softmax_b
     tf.summary.image("outputs", tf.reshape(tf.nn.softmax(output_logits),
         [-1,features_dim[1],features_dim[2],1]),
-        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length*(2 if
+            FLAGS.two_step else 1))
     """loss"""
     loss_op = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(output_logits,
         tf.nn.softmax(gt_ph))) / FLAGS.sequence_length
@@ -335,31 +339,62 @@ def main(_):
     tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size,
             num_features, controller_num_layers=FLAGS.num_layers,
             initializer=initializer, read_head_size=FLAGS.read_head_size,
-            write_head_size=FLAGS.write_head_size)
+            write_head_size=FLAGS.write_head_size, two_step=FLAGS.two_step,
+            write_first=FLAGS.write_first,
+            controller_hidden_size=FLAGS.hidden_size
+            )
     inputs = tf.reshape(features, shape=[FLAGS.batch_size,
         FLAGS.sequence_length, -1], name="reshaped_inputs")
     #print('reshaped inputs:', inputs.get_shape())
     target_ph = tf.placeholder(tf.float32,
             shape=[FLAGS.batch_size, num_features], name="target")
+    """
+    ground truth
+    """
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
     tf.summary.image("ground_truth", tf.reshape(gt_ph,
         [-1,features_dim[1],features_dim[2],1]),
         max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+    if FLAGS.two_step:
+        """
+        remove the first frame ground truth
+        and pad the ground truth to twice the sequence length - 2
+        """
+        assert(FLAGS.sequence_length >= 2, "two_step must be used with sequence at least length 2")
+        gt_pad = tf.zeros_like(gt_ph[:,1:,:], dtype=tf.float32, name="gt_pad")
+        gt_stacked = tf.stack((gt_pad, gt_ph[:,1:,:]), axis=2)
+        labels = tf.reshape(gt_stacked, [FLAGS.batch_size,
+            FLAGS.sequence_length*2-2, num_features])
+        labels=tf.concat_v2([tf.zeros([FLAGS.batch_size, 1, num_features]),
+                labels], axis=1, name="labels")
+        tf.summary.image("labels", tf.reshape(labels,
+            [-1,features_dim[1],features_dim[2],1]),
+            max_outputs=FLAGS.batch_size*2*(FLAGS.sequence_length-1))
+    """
+    build the tracker
+    """
     outputs, output_logits, states, debugs = tracker(inputs, target_ph)
-    tf.summary.image("outputs", tf.reshape(outputs,
+    tf.summary.image("outputs", tf.reshape(tf.sigmoid(output_logits),
         [-1,features_dim[1],features_dim[2],1]),
-        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+        max_outputs=(FLAGS.batch_size*FLAGS.sequence_length if
+            not FLAGS.two_step else FLAGS.batch_size*(2*FLAGS.sequence_length-1)))
     #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
     """loss"""
-    loss_op = tf.reduce_sum(
+    if FLAGS.two_step:
+        labels=tf.reshape(labels, [-1, num_features])
+        logits=tf.reshape(tf.sigmoid(output_logits), [-1, num_features]),
+        loss_op = tf.nn.l2_loss(logits-labels) /\
+                FLAGS.batch_size*(2*FLAGS.sequence_length-1)
+    else:
+        loss_op = tf.reduce_sum(
             tf.nn.softmax_cross_entropy_with_logits(
                 logits=tf.reshape(output_logits, [-1, num_features]),
                 labels=tf.nn.softmax(tf.reshape(gt_ph, [-1, num_features]))
                 )) / (FLAGS.sequence_length *
-                        FLAGS.batch_size)
+                        FLAGS.batch_size * (2 if FLAGS.two_step else 1))
     tf.summary.scalar('loss', loss_op)
     tf.summary.tensor_summary('outputs_summary', outputs)
     tf.summary.tensor_summary('output_logits_summary', output_logits)
@@ -367,8 +402,8 @@ def main(_):
     tvars = tf.trainable_variables()
     grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
             FLAGS.max_gradient_norm)
-    lr = tf.constant(FLAGS.learning_rate, name="learning_rate")
-    optimizer = tf.train.GradientDescentOptimizer(lr)
+    optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
+            decay=FLAGS.decay, momentum=FLAGS.momentum)
     train_op = optimizer.apply_gradients(
             zip(grads, tvars),
             global_step = tf.contrib.framework.get_or_create_global_step())
