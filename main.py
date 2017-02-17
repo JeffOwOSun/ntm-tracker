@@ -370,7 +370,7 @@ def main(_):
                 labels], axis=1, name="labels")
         tf.summary.image("labels", tf.reshape(labels,
             [-1,features_dim[1],features_dim[2],1]),
-            max_outputs=FLAGS.batch_size*2*(FLAGS.sequence_length-1))
+            max_outputs=FLAGS.batch_size*(2*FLAGS.sequence_length-1))
     """
     build the tracker
     """
