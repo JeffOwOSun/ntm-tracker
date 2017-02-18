@@ -10,3 +10,4 @@ checkpoint
 *.ckpt.meta
 *.pyc
 matcher_test
+*.pkl.*

@@ -31,8 +31,13 @@ def objframe_statistics():
             raw_statistics = pickle.load(f)
     except:
         raw_statistics = \
-        get_seq_statistics('/home/jowos/data/ILSVRC2015/Data/VID/train',
-            '/home/jowos/data/ILSVRC2015/Annotations/VID/train')
+        get_seq_statistics([
+            '/home/jowos/data/ILSVRC2015/Data/VID/train/a',
+            '/home/jowos/data/ILSVRC2015/Data/VID/train/b'],
+            [
+            '/home/jowos/data/ILSVRC2015/Annotations/VID/train/a',
+            '/home/jowos/data/ILSVRC2015/Annotations/VID/train/b',
+            ])
         with open('raw_statistics.pkl', 'w') as f:
             pickle.dump(raw_statistics, f)
 
