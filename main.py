@@ -51,6 +51,7 @@ flags.DEFINE_boolean("two_step", False, "present the input in a 2-step manner")
 flags.DEFINE_boolean("sequential", False, "present the input in a sequential manner")
 flags.DEFINE_boolean("write_first", False, "write before read")
 flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels after input compression")
+flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
 
 FLAGS = flags.FLAGS
 
@@ -747,6 +748,136 @@ def ntm_sequential():
     return (train_op, loss_op, merged_summary, target_ph, gt_ph,
             file_names_placeholder, enqueue_op, q_close_op, [outputs,
                 output_logits, states, debugs], default_get_batch)
+
+def resize_imgs(batch_img, bboxes, bbox_grid, crop_grid):
+    boxes = tf.stack(
+            [calculate_crop_box(bbox, bbox_grid, crop_grid)
+                for bbox in bboxes],
+            axis=0)
+    ind = tf.range(0, batch_img.get_shape().as_list()[0])
+    crop_size = batch_img.get_shape().as_list()[1:3]
+    return tf.image.crop_and_resize(batch_img, boxes, ind, crop_size)
+
+def calculate_crop_box(bbox, bbox_grid, crop_grid):
+    """
+    Args:
+        bbox: a 1D 4-tensor (xmin, xmax, ymin, ymax) of normalized coordinate
+        bbox_grid: a 2-tensor (row_grid, column_grid)
+        crop_grid: a 2-tensor (row_grid, column_grid)
+    """
+    width = (bbox[1] - bbox[0]) / bbox_grid[1] * crop_grid[1]
+    height = (bbox[3] - bbox[2]) / bbox_grid[0] * crop_grid[0]
+
+    xcenter = (bbox[0] + bbox[1]) / 2
+    ycenter = (bbox[2] + bbox[3]) / 2
+
+    xmin = xcenter - width / 2
+    xmax = xcenter + width / 2
+    ymin = ycenter - height / 2
+    ymax = ycenter + height / 2
+
+    return tf.constant([ymin, xmin, ymax, xmax])
+
+def ntm_active_resize():
+    """
+    implement the module with active resizing
+    """
+    """
+    get the inputs
+    the first dimension of batch_img here is [batch_size*sequence_length]
+    the same for bboxes
+    """
+    file_names_placeholder, enqueue_op, q_close_op, batch_img, bboxes =\
+            read_imgs_withbbox(FLAGS.batch_size*FLAGS.sequence_length)
+    batch_img = tf.reshape(batch_img, [FLAGS.batch_size, FLAGS.sequence_length,
+        224, 224, 3])
+    bboxes = tf.reshape(bboxes, [FLAGS.batch_size, FLAGS.sequence_length, 4])
+
+    """import VGG"""
+    vgg_graph_def = tf.GraphDef()
+    with open(FLAGS.vgg_model_frozen, "rb") as f:
+        vgg_graph_def.ParseFromString(f.read())
+    """
+    the features. the network is not actually used. only statistics of
+    crop_grid and bbox_grid are needed
+    """
+    dummy_features = tf.import_graph_def(vgg_graph_def, return_elements=[FLAGS.feature_layer])[0]
+    features_dim = dummy_features.get_shape().as_list()
+    crop_grid = tf.constant([features_dim[1], features_dim[2]],
+            dtype=tf.float32, name="crop_grid")
+    bbox_grid = tf.constant([
+        round(FLAGS.bbox_crop_ratio*features_dim[1]),
+        round(FLAGS.bbox_crop_ratio*features_dim[2])],
+            dtype=tf.float32, name="bbox_grid")
+
+    """
+    the ntm cell
+    """
+    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
+    cell = NTMCell(1, controller_num_layers=FLAGS.num_layers,
+            controller_hidden_size=FLAGS.hidden_size,
+            read_head_size=FLAGS.read_head_size,
+            write_head_size=FLAGS.write_head_size,
+            write_first=FLAGS.write_first,)
+
+    """
+    build the tracker:
+        1. divide the input into separate time steps
+        2. pre-precess the input of each time step
+        3. feed the input, and get output
+        4. set the bbox resize parameters of the next frame using the output
+    """
+    print("constructing tracker...")
+    with tf.variable_scope('ntm-tracker', initializer=initializer):
+        # set the initial states here
+        outputs = []
+        output_logits = []
+        states = []
+        debugs = []
+        state = cell.zero_state(FLAGS.batch_size)
+        states.append(state)
+        this_batch_bboxes = bboxes[:,0,:]
+        for idx in xrange(FLAGS.sequence_length):
+            if idx > 0:
+                tf.get_variable_scope().reuse_variables()
+            #extract the input image batch of this time step
+            this_batch_imgs = batch_imgs[:,idx,:,:,:]
+            #preprocess the input
+            resized_batch = resize_imgs(this_batch_imgs, this_batch_bboxes, bbox_grid,
+                    crop_grid)
+            #feed through VGG
+            features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
+                resized_batch}, return_elements=[FLAGS.feature_layer])[0]
+            #compress the features
+            w = tf.get_variable('input_compressor_w',
+                    shape=(1,1,features_dim[-1],FLAGS.compress_dim), dtype=tf.float32,
+                    initializer=tf.contrib.layers.xavier_initializer())
+            features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
+                    name="input_compressor")
+            #build the cell
+
+
+    """
+    the resize module
+    The bbox_ph will be replaced by actual decoded bbox outputs from the tracker
+    """
+    bbox_ph = tf.placeholder(tf.float32, shape=bboxes.get_shape())
+    resized_imgs = resize_imgs(batch_img, bbox_ph)
+
+    """import VGG"""
+    vgg_graph_def = tf.GraphDef()
+    with open(FLAGS.vgg_model_frozen, "rb") as f:
+        vgg_graph_def.ParseFromString(f.read())
+    """the features"""
+    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
+        batch_img}, return_elements=[FLAGS.feature_layer])[0]
+    features_dim = features.get_shape().as_list()
+    crop_grid = tf.constant([features_dim[1], features_dim[2]],
+            dtype=tf.float32, name="crop_grid")
+    bbox_grid = tf.constant([
+        round(FLAGS.bbox_crop_ratio*features_dim[1]),
+        round(FLAGS.bbox_crop_ratio*features_dim[2])],
+            dtype=tf.float32, name="bbox_grid")
 
 
 def main(_):
