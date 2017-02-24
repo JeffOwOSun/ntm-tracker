@@ -136,6 +136,122 @@ def test_read_imgs():
         coord.request_stop()
         coord.join(threads)
 
+def train_and_val_sequential(
+        #ops
+        train_op, loss_op, merged_summary, enqueue_op, q_close_op,
+        #input placeholders
+        file_names_placeholder, target_ph, gt_ph,
+        #intermediate tensors
+        labels, inputs, state_tensor, zero_state,
+        #intermediate placeholders
+        labels_ph, inputs_ph, state_ph,
+        other_ops=[],
+        get_batch=default_get_batch):
+    #check_op = tf.add_check_numerics_ops()
+    with tf.Session() as sess:
+        print('session started')
+        writer = tf.summary.FileWriter(real_log_dir, sess.graph)
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(coord=coord)
+        # initialize variables
+        sess.run(tf.initialize_all_variables())
+        print("start to run the training.")
+        """
+        1. get the statistics
+        2. get the images
+        3. extract the features
+        4. train the network
+        """
+        print("loading generated_sequences.pkl...")
+        with open('generated_sequences.pkl', 'r') as f:
+            generated_sequences = pickle.load(f)
+        #shuffle the order
+        print("shuffling the sequences...")
+        random.shuffle(generated_sequences)
+        #filter the short sequences
+        print("filtering out too short sequences...")
+        generated_sequences = [x for x in generated_sequences if x[-2] >=
+                FLAGS.sequence_length]
+        print('{} sequences after length filtering'.format(len(generated_sequences)))
+        #divide train/test batches
+        num_train = (len(generated_sequences)/10*9)/FLAGS.batch_size*FLAGS.batch_size
+        num_test = (len(generated_sequences)/10)/FLAGS.batch_size*FLAGS.batch_size
+        test_seqs = generated_sequences[:num_test]
+        train_seqs = generated_sequences[-num_train:]
+        print('{} train seqs, {} test seqs'.format(
+            len(train_seqs), len(test_seqs)))
+        step = 0
+        num_epochs = FLAGS.num_epochs
+        for epoch in xrange(num_epochs):
+            print("training epoch {}".format(epoch))
+            random.shuffle(train_seqs)
+            print("shuffled training seqs")
+            #train
+            index = 0 #index used by get_batch
+            while index < len(train_seqs):
+                # this batch
+                frame_names, real_gts, index = get_batch(index,
+                        FLAGS.batch_size, FLAGS.sequence_length, train_seqs)
+                feed_dict = {file_names_placeholder:
+                            frame_names}
+                #print(feed_dict)
+                sess.run(enqueue_op, feed_dict=feed_dict)
+                #get the intermediate tensors
+                real_inputs, real_labels, real_zero_state = sess.run([
+                    inputs, labels, zero_state],
+                        feed_dict = {
+                            target_ph: real_gts[:,0,:],
+                            gt_ph: real_gts,
+                            }
+
+                #now run the model
+                state = real_zero_state
+                idx = 0
+                while idx < real_inputs.shape[1]:
+                    #chop the inputs and labels
+                    feed_dict = {
+                            labels_ph: real_labels[:,idx:idx+FLAGS.model_length,:],
+                            inputs_ph: real_inputs[:,idx:idx+FLAGS.model_length,:],
+                            state_ph: state,
+                            }
+                    #run the session
+                    ret = sess.run(
+                            [loss_op, state_tensor, merged, train_op]+other_ops,
+                            feed_dict=feed_dict
+                            )
+                    real_loss, state, summary = ret[:3]
+                    writer.add_summary(summary, step)
+                    if step % FLAGS.log_interval == 0:
+                        print("{}: training loss {}".format(step, real_loss))
+                    idx += FLAGS.model_length
+                    step += 1
+
+        step = 0
+        accumu_loss = 0
+        index = 0
+        while index < len(test_seqs):
+            frame_names, real_gts, index = get_batch(index,
+                    FLAGS.batch_size, FLAGS.sequence_length, test_seqs)
+            feed_dict = {file_names_placeholder:
+                        frame_names}
+            sess.run(enqueue_op, feed_dict=feed_dict)
+            # extract the ground truths
+            real_loss = sess.run(loss_op, feed_dict = {
+                    target_ph: real_gts[:,0,:],
+                    gt_ph: real_gts,
+                })
+            accumu_loss += real_loss
+            step += 1
+        print("average testing loss {}".format(accumu_loss / float(step)))
+        saver = tf.train.Saver()
+        save_path = saver.save(sess, os.path.join(real_log_dir,
+            "model.ckpt"))
+        print("model saved to {}".format(save_path))
+
+        sess.run(q_close_op) #close the queue
+        coord.request_stop()
+        coord.join(threads)
+
 def train_and_val(train_op, loss, merged, target, gt,
         file_names_placeholder, enqueue_op, q_close_op, other_ops=[],
         get_batch=default_get_batch):
@@ -690,7 +806,8 @@ def ntm_sequential():
             read_head_size=FLAGS.read_head_size,
             write_head_size=FLAGS.write_head_size,
             write_first=FLAGS.write_first,)
-    state_ph = tracker.cell.state_placeholder()
+    zero_state = tracker.cell.zero_state(FLAGS.batch_size)
+    state_ph = tracker.cell.state_placeholder(FLAGS.batch_size)
     inputs_ph = tf.placeholder(tf.float32, shape=[FLAGS.batch_size,
         FLAGS.model_length, inputs.get_shape().as_list()[-1]],
         name="model_input_ph")
@@ -739,9 +856,9 @@ def ntm_sequential():
             #input placeholders
             file_names_placeholder, target_ph, gt_ph,
             #intermediate tensors
-            labels, inputs, state,
+            labels, inputs, state, zero_state,
             #intermediate placeholders
-            labels_ph, inputs_ph, state_ph
+            labels_ph, inputs_ph, state_ph,
             #other ops
             [outputs, output_logits, states, debugs],
             #get batch function
