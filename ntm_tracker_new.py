@@ -1,6 +1,46 @@
 from ntm_cell import NTMCell
 import tensorflow as tf
 
+class PlainNTMTracker(object):
+    """
+    This tracker is a general abstract version, where no assumption on the
+    nature of input is made
+    """
+    def __init__(self, model_length, output_dim,
+            initializer=tf.random_uniform_initializer(-0.1,0.1),
+            **kwargs):
+        """
+        ntm tracker core.
+        uses NTMCell to form the pipeline
+        """
+        self.model_length = model_length
+        self.output_dim = output_dim
+        self.cell = NTMCell(output_dim, **kwargs)
+        self.initializer = initializer
+
+    def __call__(self, inputs, state=None, scope=None):
+        state = state or self.cell.zero_state(inputs.get_shape().as_list()[0])
+        self.outputs = []
+        self.output_logits = []
+        self.states = []
+        self.states.append(state)
+
+        with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
+            for idx in xrange(self.model_length):
+                if idx > 0:
+                    tf.get_variable_scope().reuse_variables()
+
+                ntm_output, ntm_output_logit, state, debug = self.cell(
+                        inputs[:,idx,:], state)
+                self.states.append(state)
+                self.debugs.append(debug)
+                self.outputs.append(ntm_output)
+                self.output_logits.append(ntm_output_logit)
+
+        return tf.stack(self.outputs, axis=1, name="outputs"),\
+                tf.stack(self.output_logits, axis=1, name="output_logits"),\
+                self.states, self.debugs
+
 class NTMTracker(object):
     def __init__(self, sequence_length, batch_size, output_dim,
             initializer=tf.random_uniform_initializer(-0.1,0.1),
