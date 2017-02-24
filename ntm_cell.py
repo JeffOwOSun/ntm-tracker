@@ -44,10 +44,10 @@ class NTMCell(object):
 
         controller_cell = tf.contrib.rnn.BasicLSTMCell(
                 controller_hidden_size, forget_bias=0.0,
-                state_is_tuple=True)
+                state_is_tuple=False)
         self.controller = tf.contrib.rnn.MultiRNNCell(
                 [controller_cell] * controller_num_layers,
-                state_is_tuple=True)
+                state_is_tuple=False)
 
 
     def __call__(self, inputs, prev_state, scope=None):
@@ -226,6 +226,35 @@ class NTMCell(object):
                     }
 
         return ntm_output, ntm_output_logit, state, debug
+
+    def state_placeholder(self, batch_size):
+        with tf.variable_scope("init_state_ph"):
+            M = tf.placeholder(
+                    dtype=tf.float32,
+                    shape=[batch_size, self.mem_size, self.mem_dim],
+                    name="M")
+            w = tf.placeholder(
+                    dtype=tf.float32,
+                    shape=[batch_size,
+                        self.read_head_size+self.write_head_size,
+                        self.mem_size],
+                    name="w")
+            read = tf.placeholder(
+                    dtype=tf.float32,
+                    shape=[batch_size, self.read_head_size, self.mem_dim],
+                    name="read")
+            controller_state = tf.placeholder(
+                    dtype=tf.float32,
+                    shape=self.controller.zero_state(batch_size,
+                        tf.float32).get_shape(),
+                    name="controller_state")
+        state = {
+                'M': M,
+                'w': w,
+                'read': read,
+                'controller_state': controller_state,
+                }
+        return state
 
     def zero_state(self, batch_size):
         """

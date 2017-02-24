@@ -8,7 +8,7 @@ import os
 
 from vgg import vgg_16
 
-from ntm_tracker_new import NTMTracker
+from ntm_tracker_new import NTMTracker, PlainNTMTracker
 from ntm_cell import NTMCell
 
 import random
@@ -538,20 +538,6 @@ def ntm_sequential():
             initializer=tf.contrib.layers.xavier_initializer())
     features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
             name="input_compressor")
-    """the tracker"""
-    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
-    cell = NTMCell(1, controller_num_layers=FLAGS.num_layers,
-            controller_hidden_size=FLAGS.hidden_size,
-            read_head_size=FLAGS.read_head_size,
-            write_head_size=FLAGS.write_head_size,
-            write_first=FLAGS.write_first,)
-    #tracker = NTMTracker(FLAGS.sequence_length, FLAGS.batch_size,
-    #        num_features+1, controller_num_layers=FLAGS.num_layers,
-    #        initializer=initializer, read_head_size=FLAGS.read_head_size,
-    #        write_head_size=FLAGS.write_head_size, two_step=FLAGS.two_step,
-    #        write_first=FLAGS.write_first,
-    #        controller_hidden_size=FLAGS.hidden_size
-    #        )
     """
     the inputs;
     features is of shape [batch * seq_length, 28, 28, 128]
@@ -584,92 +570,71 @@ def ntm_sequential():
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
     """
     total_steps = num_features + (FLAGS.sequence_length - 1) * (2 * num_features + 1)
-    print("constructing tracker...")
-    #outputs, output_logits, states, debugs = tracker(inputs, target_ph)
-    with tf.variable_scope('ntm-tracker', initializer=initializer):
-        #shape [batch, seq_len, num_features, 130]
-        inputs_padded = tf.concat_v2([inputs, tf.zeros([FLAGS.batch_size,
-            FLAGS.sequence_length, num_features, 2])], 3)
-        #shape [batch, sequence_length-1, num_features, 130]
-        inputs_no_zeroth = inputs_padded[:, 1:, :, :]
-        #shape [batch, 1, 1, 128]
-        dummy_feature = tf.zeros([FLAGS.batch_size, 1, 1, FLAGS.compress_dim])
-        #shape [batch, 1, 1, 130]
-        frame_delimiter = tf.concat_v2([
-                dummy_feature,
-                tf.zeros([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
-                tf.ones([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
-                ], 3)
-        #frame delimiters, number: sequence_length - 1
-        #shape [batch, sequence_length - 1, 1, 130]
-        frame_delimiters = tf.tile(frame_delimiter,
-                [1, FLAGS.sequence_length-1, 1, 1],
-                name="frame_delimiters")
-        feature_delimiter = tf.concat_v2([
-                dummy_feature,
-                tf.ones([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
-                tf.zeros([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
-                ], 3)
-        #feature delimiters, number: 1 per feature
-        #shape [batch, sequence_length-1, num_features, 130]
-        feature_delimiters = tf.tile(feature_delimiter,
-                [1, FLAGS.sequence_length-1, num_features, 1],
-                name="feature_delimiters")
-        #now insert the feature delimiters
-        inputs_no_zeroth = tf.reshape(tf.concat_v2(
-                [inputs_no_zeroth, feature_delimiters], 3),
-                [FLAGS.batch_size, FLAGS.sequence_length-1, num_features*2,
-                    FLAGS.compress_dim+2])
-        #now insert the frame delimiters
-        inputs_no_zeroth = tf.concat_v2(
-                [frame_delimiters, inputs_no_zeroth], 2)
-        #now add back the zeroth frame
-        inputs_no_zeroth = tf.reshape(inputs_no_zeroth,
-                [
-                    FLAGS.batch_size,
-                    (FLAGS.sequence_length-1)*(2*num_features+1),
-                    FLAGS.compress_dim+2
-                ])
-        """
-        num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
-        """
-        inputs = tf.concat_v2([
-                inputs_padded[:,0,:,:],
-                inputs_no_zeroth,
-                ], 1, name="serial_inputs")
-        target = tf.concat_v2([
-                target_ph,
-                tf.zeros([FLAGS.batch_size,
-                    (FLAGS.sequence_length - 1) * (2 * num_features + 1),
-                    ], dtype=tf.float32)], 1)
-        #dims: [batch_size, total_steps, 131]
-        inputs = tf.concat_v2([
-            inputs,
-            tf.expand_dims(target, -1)], -1)
-        outputs = []
-        output_logits = []
-        states = []
-        debugs = []
-        state = cell.zero_state(FLAGS.batch_size)
-        states.append(state)
-        for idx in xrange(total_steps):
-            if idx > 0:
-                tf.get_variable_scope().reuse_variables()
-            ntm_output, ntm_output_logit, state, debug = cell(
-                 inputs[:, idx, :], state)
-            states.append(state)
-            debugs.append(debug)
-            outputs.append(ntm_output)
-            output_logits.append(ntm_output_logit)
-
-        outputs = tf.stack(outputs, axis=1, name="outputs")
-        output_logits = tf.stack(output_logits, axis=1, name="output_logits")
-
-    tf.summary.image("outputs", tf.reshape(outputs,
-        [1,FLAGS.batch_size,total_steps,1]),
-        max_outputs=1)
+    print("constructing inputs...")
+    #shape [batch, seq_len, num_features, 130]
+    inputs_padded = tf.concat_v2([inputs, tf.zeros([FLAGS.batch_size,
+        FLAGS.sequence_length, num_features, 2])], 3)
+    #shape [batch, sequence_length-1, num_features, 130]
+    inputs_no_zeroth = inputs_padded[:, 1:, :, :]
+    #shape [batch, 1, 1, 128]
+    dummy_feature = tf.zeros([FLAGS.batch_size, 1, 1, FLAGS.compress_dim])
+    #shape [batch, 1, 1, 130]
+    frame_delimiter = tf.concat_v2([
+            dummy_feature,
+            tf.zeros([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
+            tf.ones([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
+            ], 3)
+    #frame delimiters, number: sequence_length - 1
+    #shape [batch, sequence_length - 1, 1, 130]
+    frame_delimiters = tf.tile(frame_delimiter,
+            [1, FLAGS.sequence_length-1, 1, 1],
+            name="frame_delimiters")
+    feature_delimiter = tf.concat_v2([
+            dummy_feature,
+            tf.ones([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
+            tf.zeros([FLAGS.batch_size, 1, 1, 1], dtype=tf.float32),
+            ], 3)
+    #feature delimiters, number: 1 per feature
+    #shape [batch, sequence_length-1, num_features, 130]
+    feature_delimiters = tf.tile(feature_delimiter,
+            [1, FLAGS.sequence_length-1, num_features, 1],
+            name="feature_delimiters")
+    #now insert the feature delimiters
+    inputs_no_zeroth = tf.reshape(tf.concat_v2(
+            [inputs_no_zeroth, feature_delimiters], 3),
+            [FLAGS.batch_size, FLAGS.sequence_length-1, num_features*2,
+                FLAGS.compress_dim+2])
+    #now insert the frame delimiters
+    inputs_no_zeroth = tf.concat_v2(
+            [frame_delimiters, inputs_no_zeroth], 2)
+    #now add back the zeroth frame
+    inputs_no_zeroth = tf.reshape(inputs_no_zeroth,
+            [
+                FLAGS.batch_size,
+                (FLAGS.sequence_length-1)*(2*num_features+1),
+                FLAGS.compress_dim+2
+            ])
+    """
+    num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
+    """
+    inputs = tf.concat_v2([
+            inputs_padded[:,0,:,:],
+            inputs_no_zeroth,
+            ], 1, name="serial_inputs")
+    target = tf.concat_v2([
+            target_ph,
+            tf.zeros([FLAGS.batch_size,
+                (FLAGS.sequence_length - 1) * (2 * num_features + 1),
+                ], dtype=tf.float32)], 1)
+    #dims: [batch_size, total_steps, 131]
+    inputs = tf.concat_v2([
+        inputs,
+        tf.expand_dims(target, -1)], -1)
+    print("constructing ground truths...")
     """
     ground truth
+    gt_ph is supposed to be fed with ground truths directly extracted from
+    input batcher
     """
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
@@ -716,6 +681,28 @@ def ntm_sequential():
     tf.summary.image("labels", tf.reshape(labels,
         [1,FLAGS.batch_size,num_features+(FLAGS.sequence_length-1)*(2*num_features+1),1]),
         max_outputs=1)
+    print("constructing tracker...")
+    """the tracker"""
+    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
+    tracker = PlainNTMTracker(FLAGS.model_length, 1,
+            controller_num_layers=FLAGS.num_layers,
+            controller_hidden_size=FLAGS.hidden_size,
+            read_head_size=FLAGS.read_head_size,
+            write_head_size=FLAGS.write_head_size,
+            write_first=FLAGS.write_first,)
+    state_ph = tracker.cell.state_placeholder()
+    inputs_ph = tf.placeholder(tf.float32, shape=[FLAGS.batch_size,
+        FLAGS.model_length, inputs.get_shape().as_list()[-1]],
+        name="model_input_ph")
+    """
+    shape of outputs: [batch, model_length, 1]
+    """
+    outputs, output_logits, states, debugs = tracker(inputs_ph, state_ph)
+    state = states[-1]
+
+    tf.summary.image("outputs", tf.reshape(outputs,
+        [1,FLAGS.batch_size,FLAGS.model_length,1]),
+        max_outputs=1)
     #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
@@ -725,13 +712,14 @@ def ntm_sequential():
     #        logits=tf.reshape(output_logits, [-1, num_features+1]),
     #        labels=tf.nn.softmax(tf.reshape(labels, [-1, num_features+1]))
     #        )) / ((2*FLAGS.sequence_length-1) * FLAGS.batch_size)
+    print("constructing loss...")
     """l2 loss"""
-    labels=tf.reshape(labels,
-        [FLAGS.batch_size,total_steps])
-    logits = tf.reshape(tf.sigmoid(output_logits),
-        [FLAGS.batch_size,total_steps])
-    loss_op = tf.nn.l2_loss(logits-labels) / total_steps
-    tf.summary.scalar('loss', loss_op / FLAGS.batch_size)
+    labels_ph = tf.placeholder(dtype=tf.float32,
+            shape=[FLAGS.batch_size, FLAGS.model_length, 1],
+            name="label_ph")
+    output_sigmoids = tf.sigmoid(output_logits)
+    loss_op = tf.losses.log_loss(labels_ph, output_sigmoids)
+    tf.summary.scalar('loss', loss_op)
     tf.summary.tensor_summary('outputs_summary', outputs)
     tf.summary.tensor_summary('output_logits_summary', output_logits)
     """training op"""
@@ -746,9 +734,18 @@ def ntm_sequential():
             global_step = tf.contrib.framework.get_or_create_global_step())
     merged_summary = tf.summary.merge_all()
 
-    return (train_op, loss_op, merged_summary, target_ph, gt_ph,
-            file_names_placeholder, enqueue_op, q_close_op, [outputs,
-                output_logits, states, debugs], default_get_batch)
+    return (#ops
+            train_op, loss_op, merged_summary, enqueue_op, q_close_op,
+            #input placeholders
+            file_names_placeholder, target_ph, gt_ph,
+            #intermediate tensors
+            labels, inputs, state,
+            #intermediate placeholders
+            labels_ph, inputs_ph, state_ph
+            #other ops
+            [outputs, output_logits, states, debugs],
+            #get batch function
+            default_get_batch)
 
 def resize_imgs(batch_img, bboxes, bbox_grid, crop_grid):
     boxes = tf.stack(

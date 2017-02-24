@@ -14,7 +14,6 @@ class PlainNTMTracker(object):
         uses NTMCell to form the pipeline
         """
         self.model_length = model_length
-        self.output_dim = output_dim
         self.cell = NTMCell(output_dim, **kwargs)
         self.initializer = initializer
 
