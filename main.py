@@ -114,6 +114,9 @@ def read_imgs(batch_size):
     tf.summary.image('batch_img', batch_img, max_outputs=batch_size)
     return enqueue_placeholder, enqueue_op, queue_close_op, batch_img
 
+def read_imgs_withbbox(batch_size):
+    pass
+
 def test_read_imgs():
     #TODO: update this function
     with tf.Session() as sess:
@@ -138,13 +141,14 @@ def test_read_imgs():
 
 def train_and_val_sequential(
         #ops
-        train_op, loss_op, merged_summary, enqueue_op, q_close_op,
+        train_op, loss_op, enqueue_op, q_close_op,
         #input placeholders
         file_names_placeholder, target_ph, gt_ph,
         #intermediate tensors
         labels, inputs, state_tensor, zero_state,
         #intermediate placeholders
         labels_ph, inputs_ph, state_ph,
+        summaries,
         other_ops=[],
         get_batch=default_get_batch):
     #check_op = tf.add_check_numerics_ops()
@@ -203,24 +207,29 @@ def train_and_val_sequential(
                             target_ph: real_gts[:,0,:],
                             gt_ph: real_gts,
                             }
-
+                        )
+                #import pdb; pdb.set_trace()
                 #now run the model
                 state = real_zero_state
                 idx = 0
                 while idx < real_inputs.shape[1]:
                     #chop the inputs and labels
-                    feed_dict = {
+                    feed_dict = {state_ph[k]:state[k] for k in
+                            state_ph.keys()}
+                    feed_dict.update({
                             labels_ph: real_labels[:,idx:idx+FLAGS.model_length,:],
                             inputs_ph: real_inputs[:,idx:idx+FLAGS.model_length,:],
-                            state_ph: state,
-                            }
+                            })
                     #run the session
                     ret = sess.run(
-                            [loss_op, state_tensor, merged, train_op]+other_ops,
+                            [loss_op, state_tensor, train_op]+summaries,
                             feed_dict=feed_dict
                             )
-                    real_loss, state, summary = ret[:3]
-                    writer.add_summary(summary, step)
+                    #import pdb; pdb.set_trace()
+                    real_loss, state = ret[:2]
+                    real_summaries = ret[3:3+len(summaries)]
+                    for summary in real_summaries:
+                        writer.add_summary(summary, step)
                     if step % FLAGS.log_interval == 0:
                         print("{}: training loss {}".format(step, real_loss))
                     idx += FLAGS.model_length
@@ -235,13 +244,36 @@ def train_and_val_sequential(
             feed_dict = {file_names_placeholder:
                         frame_names}
             sess.run(enqueue_op, feed_dict=feed_dict)
-            # extract the ground truths
-            real_loss = sess.run(loss_op, feed_dict = {
-                    target_ph: real_gts[:,0,:],
-                    gt_ph: real_gts,
-                })
-            accumu_loss += real_loss
-            step += 1
+            #get the intermediate tensors
+            real_inputs, real_labels, real_zero_state = sess.run([
+                inputs, labels, zero_state],
+                    feed_dict = {
+                        target_ph: real_gts[:,0,:],
+                        gt_ph: real_gts,
+                        }
+                    )
+
+            #now run the model
+            state = real_zero_state
+            idx = 0
+            while idx < real_inputs.shape[1]:
+                #chop the inputs and labels
+                feed_dict = {state_ph[k]:state[k] for k in
+                        state_ph.keys()}
+                feed_dict.update({
+                        labels_ph: real_labels[:,idx:idx+FLAGS.model_length,:],
+                        inputs_ph: real_inputs[:,idx:idx+FLAGS.model_length,:],
+                        })
+                #run the session
+                real_loss, state = sess.run(
+                        [loss_op, state_tensor],
+                        feed_dict=feed_dict
+                        )
+                if step % FLAGS.log_interval == 0:
+                    print("{}: test loss {}".format(step, real_loss))
+                idx += FLAGS.model_length
+                step += 1
+                accumu_loss += real_loss
         print("average testing loss {}".format(accumu_loss / float(step)))
         saver = tf.train.Saver()
         save_path = saver.save(sess, os.path.join(real_log_dir,
@@ -648,12 +680,12 @@ def ntm_sequential():
     features_dim = features.get_shape().as_list()
     print('features_dim', features_dim)
     num_features = features_dim[1]*features_dim[2]
-    """compress input dimensions"""
-    w = tf.get_variable('input_compressor_w',
-            shape=(1,1,features_dim[-1],FLAGS.compress_dim), dtype=tf.float32,
-            initializer=tf.contrib.layers.xavier_initializer())
-    features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
-            name="input_compressor")
+    #"""compress input dimensions"""
+    #w = tf.get_variable('input_compressor_w',
+    #        shape=(1,1,features_dim[-1],FLAGS.compress_dim), dtype=tf.float32,
+    #        initializer=tf.contrib.layers.xavier_initializer())
+    #features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
+    #        name="input_compressor")
     """
     the inputs;
     features is of shape [batch * seq_length, 28, 28, 128]
@@ -662,7 +694,7 @@ def ntm_sequential():
     """
 
     inputs = tf.reshape(features, shape=[FLAGS.batch_size,
-        FLAGS.sequence_length, num_features, FLAGS.compress_dim], name="reshaped_inputs")
+        FLAGS.sequence_length, num_features, features_dim[-1]], name="reshaped_inputs")
     #print('reshaped inputs:', inputs.get_shape())
     """
     placeholder to accept target indicator input
@@ -686,6 +718,7 @@ def ntm_sequential():
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
     """
     total_steps = num_features + (FLAGS.sequence_length - 1) * (2 * num_features + 1)
+    pad_steps = FLAGS.model_length - (total_steps % FLAGS.model_length) if total_steps % FLAGS.model_length else 0
     print("constructing inputs...")
     #shape [batch, seq_len, num_features, 130]
     inputs_padded = tf.concat_v2([inputs, tf.zeros([FLAGS.batch_size,
@@ -693,7 +726,7 @@ def ntm_sequential():
     #shape [batch, sequence_length-1, num_features, 130]
     inputs_no_zeroth = inputs_padded[:, 1:, :, :]
     #shape [batch, 1, 1, 128]
-    dummy_feature = tf.zeros([FLAGS.batch_size, 1, 1, FLAGS.compress_dim])
+    dummy_feature = tf.zeros([FLAGS.batch_size, 1, 1, features_dim[-1]])
     #shape [batch, 1, 1, 130]
     frame_delimiter = tf.concat_v2([
             dummy_feature,
@@ -719,7 +752,7 @@ def ntm_sequential():
     inputs_no_zeroth = tf.reshape(tf.concat_v2(
             [inputs_no_zeroth, feature_delimiters], 3),
             [FLAGS.batch_size, FLAGS.sequence_length-1, num_features*2,
-                FLAGS.compress_dim+2])
+                features_dim[-1]+2])
     #now insert the frame delimiters
     inputs_no_zeroth = tf.concat_v2(
             [frame_delimiters, inputs_no_zeroth], 2)
@@ -728,7 +761,7 @@ def ntm_sequential():
             [
                 FLAGS.batch_size,
                 (FLAGS.sequence_length-1)*(2*num_features+1),
-                FLAGS.compress_dim+2
+                features_dim[-1]+2
             ])
     """
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
@@ -746,6 +779,10 @@ def ntm_sequential():
     inputs = tf.concat_v2([
         inputs,
         tf.expand_dims(target, -1)], -1)
+    if pad_steps:
+        inputs_pad_steps = tf.zeros([FLAGS.batch_size, pad_steps,
+            inputs.get_shape().as_list()[-1]])
+        inputs = tf.concat_v2([ inputs, inputs_pad_steps], 1)
     print("constructing ground truths...")
     """
     ground truth
@@ -754,9 +791,9 @@ def ntm_sequential():
     """
     gt_ph = tf.placeholder(tf.float32,
         shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
-    tf.summary.image("ground_truth", tf.reshape(gt_ph,
-        [-1,features_dim[1],features_dim[2],1]),
-        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+    #tf.summary.image("ground_truth", tf.reshape(gt_ph,
+    #    [-1,features_dim[1],features_dim[2],1]),
+    #    max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
     """
     there will be
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
@@ -794,13 +831,22 @@ def ntm_sequential():
     first_frame_gt = tf.zeros([FLAGS.batch_size, num_features],
             name="gt_first_frame")
     labels=tf.concat_v2([first_frame_gt, labels], axis=1, name="labels")
-    tf.summary.image("labels", tf.reshape(labels,
-        [1,FLAGS.batch_size,num_features+(FLAGS.sequence_length-1)*(2*num_features+1),1]),
-        max_outputs=1)
+    #tf.summary.image("labels", tf.reshape(labels,
+    #    [1,FLAGS.batch_size,num_features+(FLAGS.sequence_length-1)*(2*num_features+1),1]),
+    #    max_outputs=1)
+    """pad the labels"""
+    if pad_steps:
+        labels_pad_steps = tf.zeros([FLAGS.batch_size, pad_steps])
+        labels = tf.concat_v2([labels, labels_pad_steps], 1)
+    labels = tf.expand_dims(labels, -1)
+    """
+    now the subgraph to convert model output sequence to
+    """
     print("constructing tracker...")
     """the tracker"""
     initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
     tracker = PlainNTMTracker(FLAGS.model_length, 1,
+            initializer,
             controller_num_layers=FLAGS.num_layers,
             controller_hidden_size=FLAGS.hidden_size,
             read_head_size=FLAGS.read_head_size,
@@ -817,9 +863,9 @@ def ntm_sequential():
     outputs, output_logits, states, debugs = tracker(inputs_ph, state_ph)
     state = states[-1]
 
-    tf.summary.image("outputs", tf.reshape(outputs,
+    outputs_summary = tf.summary.image("outputs", tf.reshape(outputs,
         [1,FLAGS.batch_size,FLAGS.model_length,1]),
-        max_outputs=1)
+        max_outputs=10)
     #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
@@ -830,15 +876,16 @@ def ntm_sequential():
     #        labels=tf.nn.softmax(tf.reshape(labels, [-1, num_features+1]))
     #        )) / ((2*FLAGS.sequence_length-1) * FLAGS.batch_size)
     print("constructing loss...")
-    """l2 loss"""
+    """log loss"""
     labels_ph = tf.placeholder(dtype=tf.float32,
             shape=[FLAGS.batch_size, FLAGS.model_length, 1],
             name="label_ph")
+    labels_summary = tf.summary.image("labels_ph", tf.reshape(labels_ph,
+        [1,FLAGS.batch_size,FLAGS.model_length,1]),
+        max_outputs=10)
     output_sigmoids = tf.sigmoid(output_logits)
     loss_op = tf.losses.log_loss(labels_ph, output_sigmoids)
-    tf.summary.scalar('loss', loss_op)
-    tf.summary.tensor_summary('outputs_summary', outputs)
-    tf.summary.tensor_summary('output_logits_summary', output_logits)
+    loss_summary = tf.summary.scalar('loss', loss_op)
     """training op"""
     tvars = tf.trainable_variables()
     # the gradient tensors
@@ -849,16 +896,18 @@ def ntm_sequential():
     train_op = optimizer.apply_gradients(
             zip(grads, tvars),
             global_step = tf.contrib.framework.get_or_create_global_step())
-    merged_summary = tf.summary.merge_all()
+    #merged_summary = tf.summary.merge_all()
 
     return (#ops
-            train_op, loss_op, merged_summary, enqueue_op, q_close_op,
+            train_op, loss_op, enqueue_op, q_close_op,
             #input placeholders
             file_names_placeholder, target_ph, gt_ph,
             #intermediate tensors
             labels, inputs, state, zero_state,
             #intermediate placeholders
             labels_ph, inputs_ph, state_ph,
+            #summaries
+            [loss_summary, labels_summary, outputs_summary],
             #other ops
             [outputs, output_logits, states, debugs],
             #get batch function
@@ -956,7 +1005,7 @@ def ntm_active_resize():
             if idx > 0:
                 tf.get_variable_scope().reuse_variables()
             #extract the input image batch of this time step
-            this_batch_imgs = batch_imgs[:,idx,:,:,:]
+            this_batch_imgs = batch_img[:,idx,:,:,:]
             #preprocess the input
             resized_batch = resize_imgs(this_batch_imgs, this_batch_bboxes, bbox_grid,
                     crop_grid)
@@ -1004,17 +1053,40 @@ def main(_):
         train_op, loss_op, merged_summary, target_ph, gt_ph,\
                 file_names_placeholder, enqueue_op, q_close_op,\
                 other_ops, get_batch = ntm_two_step()
+
+        train_and_val(train_op, loss_op, merged_summary, target_ph, gt_ph,
+                file_names_placeholder, enqueue_op, q_close_op, other_ops, get_batch)
     elif FLAGS.sequential:
-        train_op, loss_op, merged_summary, target_ph, gt_ph,\
-                file_names_placeholder, enqueue_op, q_close_op,\
-                other_ops, get_batch = ntm_sequential()
+
+        train_op, loss_op, enqueue_op, q_close_op,\
+        file_names_placeholder, target_ph, gt_ph,\
+        labels, inputs, state, zero_state,\
+        labels_ph, inputs_ph, state_ph,\
+        summaries,\
+        other_ops,\
+        get_batch = ntm_sequential()
+
+        train_and_val_sequential(#ops
+            train_op, loss_op, enqueue_op, q_close_op,
+            #input placeholders
+            file_names_placeholder, target_ph, gt_ph,
+            #intermediate tensors
+            labels, inputs, state, zero_state,
+            #intermediate placeholders
+            labels_ph, inputs_ph, state_ph,
+            #summaries
+            summaries,
+            #other ops
+            other_ops,
+            #get batch function
+            get_batch)
     else:
         train_op, loss_op, merged_summary, target_ph, gt_ph,\
                 file_names_placeholder, enqueue_op, q_close_op,\
                 other_ops, get_batch = ntm()
 
-    train_and_val(train_op, loss_op, merged_summary, target_ph, gt_ph,
-            file_names_placeholder, enqueue_op, q_close_op, other_ops, get_batch)
+        train_and_val(train_op, loss_op, merged_summary, target_ph, gt_ph,
+                file_names_placeholder, enqueue_op, q_close_op, other_ops, get_batch)
 
 if __name__ == '__main__':
     if (FLAGS.test_read_imgs):

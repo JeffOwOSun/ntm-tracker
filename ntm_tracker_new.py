@@ -22,6 +22,7 @@ class PlainNTMTracker(object):
         self.outputs = []
         self.output_logits = []
         self.states = []
+        self.debugs = []
         self.states.append(state)
 
         with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
