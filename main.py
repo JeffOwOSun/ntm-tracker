@@ -53,6 +53,8 @@ flags.DEFINE_boolean("sequential", False, "present the input in a sequential man
 flags.DEFINE_boolean("write_first", False, "write before read")
 flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels after input compression")
 flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
+flags.DEFINE_integer("mem_size", 128, "size of mem")
+flags.DEFINE_integer("mem_dim", 20, "dim of mem")
 
 FLAGS = flags.FLAGS
 
@@ -207,14 +209,14 @@ def train_and_val_sequential(
                 """
                 pre-run: get the real inputs and labels
                 """
-                real_inputs, real_labels, real_zero_state, summary = sess.run([
+                real_inputs, real_labels, real_zero_state,\
+                real_labels_summary = sess.run([
                     inputs, labels, zero_state, labels_summary],
                         feed_dict = {
                             target_ph: real_gts[:,0,:],
                             gt_ph: real_gts,
                             }
                         )
-                writer.add_summary(summary, sequence)
                 #import pdb; pdb.set_trace()
                 #now run the model
                 state = real_zero_state
@@ -246,9 +248,10 @@ def train_and_val_sequential(
                     idx += FLAGS.model_length
                     step += 1
                 seq_output = np.concatenate(seq_output, axis=1)
-                summary = sess.run(outputs_summary,
+                real_outputs_summary = sess.run(outputs_summary,
                         feed_dict={output_gather: seq_output})
-                writer.add_summary(summary, sequence)
+                writer.add_summary(real_labels_summary, sequence)
+                writer.add_summary(real_outputs_summary, sequence)
                 sequence += 1
 
         step = 0
@@ -834,7 +837,7 @@ def ntm_sequential():
     labels_summary = tf.summary.image("ground_truth",
             tf.reshape(gt_ph[:,1:,:],
         [FLAGS.batch_size*(FLAGS.sequence_length-1),features_dim[1],features_dim[2],1]),
-        max_outputs=10)
+        max_outputs=FLAGS.batch_size*(FLAGS.sequence_length-1))
     gt_stacked = tf.stack((gt_pad, gt_ph[:,1:,:]), axis=3)
     labels = tf.reshape(gt_stacked, [FLAGS.batch_size,
         FLAGS.sequence_length-1, 2*num_features])
@@ -887,6 +890,7 @@ def ntm_sequential():
     initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
     tracker = PlainNTMTracker(FLAGS.model_length, 1,
             initializer,
+            mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
             controller_num_layers=FLAGS.num_layers,
             controller_hidden_size=FLAGS.hidden_size,
             read_head_size=FLAGS.read_head_size,
