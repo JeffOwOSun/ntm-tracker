@@ -10,6 +10,8 @@ from vgg import vgg_16
 
 from ntm_tracker_new import NTMTracker, PlainNTMTracker
 from ntm_cell import NTMCell
+from ops import batched_smooth_cosine_similarity
+from sklearn.decomposition import PCA
 
 import random
 
@@ -51,6 +53,10 @@ flags.DEFINE_integer("write_head_size", 3, "number of write heads")
 flags.DEFINE_boolean("two_step", False, "present the input in a 2-step manner")
 flags.DEFINE_boolean("sequential", False, "present the input in a sequential manner")
 flags.DEFINE_boolean("write_first", False, "write before read")
+flags.DEFINE_boolean("sanity_check", False, "check if dataset is correct")
+flags.DEFINE_boolean("sanity_check_compressor", False, "check if compressor is correct")
+flags.DEFINE_boolean("sanity_check_trained_compressor", False, "check if compressor is correct")
+flags.DEFINE_boolean("sanity_check_pca", False, "check if compressor is correct")
 flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels after input compression")
 flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
 flags.DEFINE_integer("mem_size", 128, "size of mem")
@@ -1085,6 +1091,187 @@ def ntm_active_resize():
         round(FLAGS.bbox_crop_ratio*features_dim[2])],
             dtype=tf.float32, name="bbox_grid")
 
+#def sanity_check():
+#    """
+#    instead of training a real NTM, try to make sure we can generate heat maps
+#    by dot producting the features
+#    """
+#    """get the inputs"""
+#    file_names_placeholder, enqueue_op, q_close_op, batch_img =\
+#            read_imgs(FLAGS.batch_size*FLAGS.sequence_length)
+#    """import VGG"""
+#    vgg_graph_def = tf.GraphDef()
+#    with open(FLAGS.vgg_model_frozen, "rb") as f:
+#        vgg_graph_def.ParseFromString(f.read())
+#    """the features"""
+#    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
+#        batch_img}, return_elements=[FLAGS.feature_layer])[0]
+#    features_dim = features.get_shape().as_list()
+#    num_features = features_dim[1]*features_dim[2]
+#    num_channels = features_dim[3]
+#    #the features [batch*length, 28, 28, 512]
+#    features = tf.reshape(features,
+#            [FLAGS.batch_size, FLAGS.sequence_length, num_features, num_channels])
+#    gt_ph = tf.placeholder(tf.float32,
+#        shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
+#    # [batch, 1, num_channels]
+#    first_frame_feature = tf.matmul(
+#            tf.expand_dims(gt_ph[:,0,:], -1),
+#            features[:,0,:,:], transpose_a=True)
+#    # [batch, 1, seq_len*num_features]
+#    similarity = batched_smooth_cosine_similarity(
+#            tf.reshape(features, [FLAGS.batch_size,
+#                FLAGS.sequence_length*num_features, num_channels]),
+#            first_frame_feature)
+#    similarity = tf.reshape(similarity, [FLAGS.batch_size,
+#        FLAGS.sequence_length, num_features])
+#    tf.summary.image("similarity", tf.reshape(similarity,
+#        [FLAGS.batch_size*FLAGS.sequence_length, features_dim[1],
+#            features_dim[2], 1]),
+#        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+#    tf.summary.image("ground_truth", tf.reshape(gt_ph,
+#        [FLAGS.batch_size*FLAGS.sequence_length, features_dim[1],
+#            features_dim[2], 1]),
+#        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+#    merged_summary = tf.summary.merge_all()
+#
+#    with tf.Session() as sess:
+#        writer = tf.summary.FileWriter(real_log_dir, sess.graph)
+#        coord = tf.train.Coordinator()
+#        threads = tf.train.start_queue_runners(coord=coord)
+#        sess.run(tf.initialize_all_variables())
+#        with open('generated_sequences.pkl', 'r') as f:
+#            generated_sequences = pickle.load(f)
+#        generated_sequences = [x for x in generated_sequences if x[-2] >=
+#                FLAGS.sequence_length]
+#        frame_names, real_gts, index = default_get_batch(0,
+#                FLAGS.batch_size, FLAGS.sequence_length, generated_sequences)
+#        feed_dict = {file_names_placeholder:
+#                    frame_names}
+#        sess.run(enqueue_op, feed_dict=feed_dict)
+#        print(real_gts.shape, gt_ph.get_shape().as_list())
+#        summary = sess.run(merged_summary, feed_dict = {
+#            gt_ph: real_gts
+#            })
+#        writer.add_summary(summary, 0)
+#        sess.run(q_close_op) #close the queue
+#        coord.request_stop()
+#        coord.join(threads)
+
+def sanity_check_compressor(ckpt_path='/tmp/ntm-tracker/2017-02-18 11:28:18.000892batchsize16-seqlen2-numlayer10-hidden400-epoch100-lr1e-2-rw10-2step-write1st-augmentegt/model.ckpt',
+        compressor=False, trained=False, pca=False):
+    """
+    instead of training a real NTM, try to make sure we can generate heat maps
+    by dot producting the features
+    """
+    """get the inputs"""
+    file_names_placeholder, enqueue_op, q_close_op, batch_img =\
+            read_imgs(FLAGS.batch_size*FLAGS.sequence_length)
+    """import VGG"""
+    vgg_graph_def = tf.GraphDef()
+    with open(FLAGS.vgg_model_frozen, "rb") as f:
+        vgg_graph_def.ParseFromString(f.read())
+    """the features"""
+    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
+        batch_img}, return_elements=[FLAGS.feature_layer])[0]
+    features_dim = features.get_shape().as_list()
+    num_features = features_dim[1]*features_dim[2]
+    #num_channels = features_dim[3]
+    """the compressor"""
+    if pca:
+        pca_features = tf.placeholder(tf.float32,
+                shape=[FLAGS.batch_size, FLAGS.sequence_length,
+                    num_features, FLAGS.compress_dim])
+    if compressor:
+        w = tf.get_variable('input_compressor_w',
+                shape=(1,1,features_dim[-1],FLAGS.compress_dim), dtype=tf.float32,
+                initializer=tf.contrib.layers.xavier_initializer())
+        features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
+                name="input_compressor")
+        if trained:
+            saver = tf.train.Saver({'input_compressor_w': w})
+    #the features [batch*length, 28, 28, 512]
+    features = tf.reshape(features,
+            [FLAGS.batch_size, FLAGS.sequence_length, num_features,
+                -1])
+    gt_ph = tf.placeholder(tf.float32,
+        shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
+    # [batch, 1, compressdim]
+    if pca:
+        first_frame_feature = tf.matmul(
+                tf.expand_dims(gt_ph[:,0,:], -1),
+                pca_features[:,0,:,:], transpose_a=True)
+    # [batch, 1, seq_len*num_features]
+        similarity = batched_smooth_cosine_similarity(
+                tf.reshape(pca_features, [FLAGS.batch_size,
+                    FLAGS.sequence_length*num_features, -1]),
+                first_frame_feature)
+    else:
+        first_frame_feature = tf.matmul(
+                tf.expand_dims(gt_ph[:,0,:], -1),
+                features[:,0,:,:], transpose_a=True)
+        similarity = batched_smooth_cosine_similarity(
+                tf.reshape(features, [FLAGS.batch_size,
+                    FLAGS.sequence_length*num_features, -1]),
+                first_frame_feature)
+    similarity = tf.reshape(similarity, [FLAGS.batch_size,
+        FLAGS.sequence_length, num_features])
+    similarity_summary = tf.summary.image("similarity", tf.reshape(similarity,
+        [FLAGS.batch_size*FLAGS.sequence_length, features_dim[1],
+            features_dim[2], 1]),
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+    gt_summary = tf.summary.image("ground_truth", tf.reshape(gt_ph,
+        [FLAGS.batch_size*FLAGS.sequence_length, features_dim[1],
+            features_dim[2], 1]),
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+    merged_summary = tf.summary.merge_all()
+
+    with tf.Session() as sess:
+        writer = tf.summary.FileWriter(real_log_dir, sess.graph)
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(coord=coord)
+        sess.run(tf.global_variables_initializer())
+        if compressor and trained:
+            saver.restore(sess, ckpt_path)
+
+        with open('generated_sequences.pkl', 'r') as f:
+            generated_sequences = pickle.load(f)
+        generated_sequences = [x for x in generated_sequences if x[-2] >=
+                FLAGS.sequence_length]
+        frame_names, real_gts, index = default_get_batch(0,
+                FLAGS.batch_size, FLAGS.sequence_length, generated_sequences)
+        feed_dict = {file_names_placeholder:
+                    frame_names}
+        sess.run(enqueue_op, feed_dict=feed_dict)
+        if pca:
+            real_features = sess.run(features)
+            """do pca"""
+            print("reshaping")
+            real_features = np.reshape(real_features, [
+                FLAGS.batch_size*FLAGS.sequence_length*num_features,
+                features_dim[-1]])
+            print("doing pca")
+            pca = PCA(n_components=FLAGS.compress_dim)
+            real_features = pca.fit_transform(real_features)
+            real_features = np.reshape(real_features, [
+                FLAGS.batch_size, FLAGS.sequence_length,num_features,
+                FLAGS.compress_dim])
+            print("extracting similarity")
+            simi, gt = sess.run([similarity_summary, gt_summary], feed_dict = {
+                gt_ph: real_gts,
+                pca_features: real_features
+                })
+            writer.add_summary(simi, 0)
+            writer.add_summary(gt, 0)
+        else:
+            print(real_gts.shape, gt_ph.get_shape().as_list())
+            summary = sess.run(merged_summary, feed_dict = {
+                gt_ph: real_gts
+                })
+            writer.add_summary(summary, 0)
+        sess.run(q_close_op) #close the queue
+        coord.request_stop()
+        coord.join(threads)
 
 def main(_):
     """
@@ -1114,5 +1301,13 @@ if __name__ == '__main__':
         test_read_imgs()
     elif (FLAGS.lstm_only):
         lstm_only()
+    elif (FLAGS.sanity_check):
+        sanity_check_compressor()
+    elif (FLAGS.sanity_check_compressor):
+        sanity_check_compressor(compressor=True)
+    elif (FLAGS.sanity_check_trained_compressor):
+        sanity_check_compressor(compressor=True, trained=True)
+    elif (FLAGS.sanity_check_pca):
+        sanity_check_compressor(pca=True)
     else:
         tf.app.run()
