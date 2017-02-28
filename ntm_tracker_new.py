@@ -18,14 +18,14 @@ class PlainNTMTracker(object):
         self.initializer = initializer
 
     def __call__(self, inputs, state=None, scope=None):
-        state = state or self.cell.zero_state(inputs.get_shape().as_list()[0])
-        self.outputs = []
-        self.output_logits = []
-        self.states = []
-        self.debugs = []
-        self.states.append(state)
-
         with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
+            state = state or self.cell.zero_state(inputs.get_shape().as_list()[0])
+            self.outputs = []
+            self.output_logits = []
+            self.states = []
+            self.debugs = []
+            self.states.append(state)
+
             for idx in xrange(self.model_length):
                 if idx > 0:
                     tf.get_variable_scope().reuse_variables()

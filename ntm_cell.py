@@ -81,8 +81,11 @@ class NTMCell(object):
             #memory value of previous timestep
             #[batch, mem_size, mem_dim]
             M_prev = prev_state['M']
+            #M_prev = tf.Print(M_prev, [M_prev], message="M_prev: ")
             w_prev = prev_state['w']
+            #w_prev = tf.Print(w_prev, [w_prev], message="w_prev: ")
             read_prev = prev_state['read'] #read value history
+            #read_prev = tf.Print(read_prev, [read_prev], message="read_prev: ")
             #last output. It's a list because controller is an LSTM with multiple cells
             """
             controller state
@@ -126,13 +129,20 @@ class NTMCell(object):
 
                 #k is now in [batch, mem_dim * num_heads]
                 k = tf.tanh(tf.reshape(k, [-1, num_heads, self.mem_dim]), name='k')
+                #k = tf.Print(k, [k], message="k: ")
                 #cos similarity [batch, num_heads, mem_size]
                 similarity = batched_smooth_cosine_similarity(M_prev, k)
                 #focus by content, result [batch, num_heads, mem_size]
                 #beta is [batch, num_heads]
                 beta = tf.expand_dims(tf.nn.softplus(beta, name="beta"), -1)
+                #beta = tf.Print(beta, [beta], message="beta: ")
                 w_content_focused = tf.nn.softmax(tf.multiply(similarity, beta),
                         name="w_content_focused")
+                tf.summary.image('w_cf_step',
+                        tf.reshape(w_content_focused,
+                            [-1, self.mem_size, (self.read_head_size+self.write_head_size), 1]),
+                        max_outputs=32)
+                #w_content_focused = tf.Print(w_content_focused,         [w_content_focused], message="w_cf: ")
                 #import pdb; pdb.set_trace()
                 #g [batch, num_heads]
                 g = tf.expand_dims(tf.sigmoid(g, name='g'), -1)
@@ -141,26 +151,33 @@ class NTMCell(object):
                     tf.multiply(w_content_focused, g),
                     tf.multiply(w_prev, (1.0 - g)),
                 ], name="w_gated")
+                #w_gated = tf.Print(w_gated, [w_gated], message="w_gated: ")
                 #convolution shift
                 #sw is now in [batch, num_heads * shift_space]
                 #afterwards, sw is in [batch, num_heads, shift_space]
                 sw = tf.nn.softmax(tf.reshape(sw, [-1, num_heads, self.shift_range * 2 + 1]), name="shift_weight")
+                #sw = tf.Print(sw, [sw], message="shift weight: ")
 
                 #[batch, num_heads, mem_size]
                 w_conv = batched_circular_convolution(w_gated, sw, name="w_conv")
+                #w_conv = tf.Print(w_conv, [w_conv], message="w_conv: ")
 
                 #sharpening
                 gamma = tf.expand_dims(tf.add(tf.nn.softplus(gamma),
                     tf.constant(1.0), name="gamma"),-1)
+
+                #gamma = tf.Print(gamma, [gamma], message="gamma: ")
                 powed_w_conv = tf.pow(w_conv, gamma, name="powed_w_conv")
+                #powed_w_conv = tf.Print(powed_w_conv, [powed_w_conv, tf.reduce_sum(powed_w_conv)], message="powed_w_conv: ")
                 w = tf.div(powed_w_conv, tf.reduce_sum(powed_w_conv, axis=2,
                         keep_dims=True) + 1e-3, name='w')
+                #w = tf.Print(w, [w], message="w: ")
 
                 #split the read and write head weights
                 #w is [batch, num_heads, mem_size]
                 w_read = tf.slice(w, [0,0,0],
                         [-1,self.read_head_size,-1], name="w_read")
-                w_write = tf.slice(w, [0,self.write_head_size,0], [-1,-1,-1],
+                w_write = tf.slice(w, [0,self.read_head_size,0], [-1,-1,-1],
                         name="w_write")
 
                 #memory value of previous timestep M_prev is [batch, mem_size, mem_dim]
@@ -216,6 +233,7 @@ class NTMCell(object):
                     'w_content_focused': w_content_focused,
                     'w_gated': w_gated,
                     'w_conv': w_conv,
+                    'w_conv_powed': powed_w_conv,
                     'w': w,
                     'w_read': w_read,
                     'w_write': w_write,
@@ -256,7 +274,7 @@ class NTMCell(object):
                 }
         return state
 
-    def zero_state(self, batch_size):
+    def zero_state(self, batch_size, initializer=None):
         """
         zero state should contain:
             1. initial meory value [batch, mem_size, mem_dim]
@@ -264,17 +282,15 @@ class NTMCell(object):
             3. initial read value [batch, read_head_size, mem_dim]
             4. initial controller state
         """
-        with tf.variable_scope("init_state"):
-            M = tf.zeros(
-                    [batch_size, self.mem_size, self.mem_dim],
+        with tf.variable_scope("init_state_{}".format(batch_size)):
+            M = tf.fill( [batch_size, self.mem_size, self.mem_dim], 1e-6,
                     name="M")
-            w = tf.zeros(
+            w = tf.fill(
                     [batch_size,
                         self.read_head_size+self.write_head_size,
-                        self.mem_size],
-                    name="w")
-            read = tf.zeros(
-                    [batch_size, self.read_head_size, self.mem_dim],
+                        self.mem_size], 1e-6, name="w")
+            read = tf.fill(
+                    [batch_size, self.read_head_size, self.mem_dim], 1e-6,
                     name="read")
             controller_state = self.controller.zero_state(batch_size, tf.float32)
         state = {

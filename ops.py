@@ -144,14 +144,12 @@ def batched_smooth_cosine_similarity(memory, keys, name=None, scope=None):
     """
     with tf.variable_scope(scope or "batched_smooth_cos_similarity"):
         #memory_norm [batch, mem_size, 1]
-        memory_norm = tf.sqrt(tf.reduce_sum(tf.pow(memory, 2),2,keep_dims=True))
+        memory = tf.nn.l2_normalize(memory, 2)
         #keys_norm [batch, num_heads, 1]
-        keys_norm = tf.sqrt(tf.reduce_sum(tf.pow(keys, 2),2,keep_dims=True))
+        keys = tf.nn.l2_normalize(keys, 2)
         #dot_product [batch, num_heads, mem_size]
-        dot_product = tf.matmul(keys, memory, transpose_b=True)
-        norm_product = tf.matmul(keys_norm, memory_norm,
-                transpose_b=True)
-        return tf.div(dot_product, norm_product + 1e-3, name=name)
+        similarity = tf.matmul(keys, memory, transpose_b=True)
+        return similarity
 
 
 def smooth_cosine_similarity(m, v):

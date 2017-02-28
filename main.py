@@ -57,6 +57,7 @@ flags.DEFINE_boolean("sanity_check", False, "check if dataset is correct")
 flags.DEFINE_boolean("sanity_check_compressor", False, "check if compressor is correct")
 flags.DEFINE_boolean("sanity_check_trained_compressor", False, "check if compressor is correct")
 flags.DEFINE_boolean("sanity_check_pca", False, "check if compressor is correct")
+flags.DEFINE_boolean("copy_paste", False, "perform copy_paste task to check if the ntm is correct")
 flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels after input compression")
 flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
 flags.DEFINE_integer("mem_size", 128, "size of mem")
@@ -1273,6 +1274,139 @@ def sanity_check_compressor(ckpt_path='/tmp/ntm-tracker/2017-02-18 11:28:18.0008
         coord.request_stop()
         coord.join(threads)
 
+def copy_paste(width=3, length=FLAGS.sequence_length):
+    """
+    run a simple copy paste experiment
+    with plain ntm tracker
+    """
+    total_length = 2*length+1
+    input_ph = tf.placeholder(tf.float32, [FLAGS.batch_size*width*length])
+    inputs = tf.reshape(input_ph, [FLAGS.batch_size, width, length])
+    input_indicator_bit_pad = tf.zeros([FLAGS.batch_size, 1, length])
+    inputs = tf.concat_v2([inputs, input_indicator_bit_pad], 1)
+    input_pad = tf.zeros_like(inputs)
+    delimiter = tf.concat_v2([
+        tf.zeros([FLAGS.batch_size, width, 1]),
+        tf.ones([FLAGS.batch_size, 1, 1])], 1)
+    #input length is 2*length+1
+    labels = tf.concat_v2([input_pad, tf.zeros_like(delimiter), inputs], 2)
+    tf.summary.image('labels', tf.reshape(labels, [FLAGS.batch_size,
+        width+1, total_length, 1]), max_outputs=FLAGS.batch_size)
+    #[batch, width+1, length]
+    inputs = tf.concat_v2([inputs, delimiter, input_pad], 2)
+    tf.summary.image('inputs', tf.reshape(inputs, [FLAGS.batch_size,
+        width+1, total_length, 1]), max_outputs=FLAGS.batch_size)
+    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
+    ntm = PlainNTMTracker(total_length, width+1,
+            initializer,
+            mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
+            controller_num_layers=FLAGS.num_layers,
+            controller_hidden_size=FLAGS.hidden_size,
+            read_head_size=FLAGS.read_head_size,
+            write_head_size=FLAGS.write_head_size,
+            write_first=FLAGS.write_first,)
+    #input will be transposed to [batch, length, width+1]
+    outputs, output_logits, states, debugs = ntm(tf.transpose(inputs,
+        perm=[0,2,1]))
+    """
+    add summaries
+    """
+    """
+    w_content_focused
+    dimension of each w is [batch, num_heads, mem_size]
+    """
+    print("debugs", len(states), len(debugs))
+    ws = tf.stack([x['w_content_focused'] for x in debugs], axis=-1)
+    print("shape of ws {}".format(ws.get_shape().as_list()))
+    tf.summary.image('w_cf_reads',
+            tf.reshape(ws[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
+                FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('w_cf_writes',
+            tf.reshape(ws[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
+                FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    """w"""
+    ws = tf.stack([x['w'] for x in states], axis=-1)
+    tf.summary.image('w_reads',
+            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+                [FLAGS.batch_size,
+                    FLAGS.mem_size*FLAGS.read_head_size, total_length+1, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('w_writes',
+            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+                [FLAGS.batch_size,
+                    FLAGS.mem_size*FLAGS.write_head_size, total_length+1, 1]),
+            max_outputs=FLAGS.batch_size)
+    """w_gated"""
+    ws = tf.stack([x['w_gated'] for x in debugs], axis=-1)
+    tf.summary.image('w_gated_reads',
+            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+                [FLAGS.batch_size, -1, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('w_gated_writes',
+            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+                [FLAGS.batch_size, -1, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    """w_conv"""
+    ws = tf.stack([x['w_conv'] for x in debugs], axis=-1)
+    tf.summary.image('w_conv_reads',
+            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+                [FLAGS.batch_size, -1, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('w_conv_writes',
+            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+                [FLAGS.batch_size, -1, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    """w_conv_powed"""
+    ws = tf.stack([x['w_conv_powed'] for x in debugs], axis=-1)
+    tf.summary.image('w_conv_powed_reads',
+            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+                [FLAGS.batch_size, -1, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('w_conv_powed_writes',
+            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+                [FLAGS.batch_size, -1, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    output_sigmoid = tf.sigmoid(tf.transpose(output_logits, perm=[0,2,1]))
+    tf.summary.image('output_sigmoid', tf.reshape(output_sigmoid, [FLAGS.batch_size,
+        width+1, total_length, 1]), max_outputs=FLAGS.batch_size)
+    loss_op = tf.losses.log_loss(labels, output_sigmoid)
+    tf.summary.scalar('loss', loss_op)
+    """training"""
+    tvars = tf.trainable_variables()
+    grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
+            FLAGS.max_gradient_norm)
+    optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
+            decay=FLAGS.decay, momentum=FLAGS.momentum)
+    train_op = optimizer.apply_gradients(
+            zip(grads, tvars),
+            global_step = tf.contrib.framework.get_or_create_global_step())
+    merged_summary = tf.summary.merge_all()
+    #check_op = tf.add_check_numerics_ops()
+
+    with tf.Session() as sess:
+        print("session started")
+        writer = tf.summary.FileWriter(real_log_dir, sess.graph)
+        sess.run(tf.global_variables_initializer())
+        """
+        generate random inputs
+        """
+        for epoch in xrange(FLAGS.num_epochs):
+            #print("running epoch {}".format(epoch))
+            real_input = np.random.randint(2, size=FLAGS.batch_size*width*length)
+            (loss, out, summ, _,
+            #_
+            ) = sess.run([loss_op, output_sigmoid,
+                merged_summary, train_op,
+                #check_op
+                ],
+                    feed_dict={
+                        input_ph: real_input,
+                        })
+            print("{}: loss {}".format(epoch, loss))
+            writer.add_summary(summ, epoch)
+
 def main(_):
     """
     1. create graph
@@ -1309,5 +1443,7 @@ if __name__ == '__main__':
         sanity_check_compressor(compressor=True, trained=True)
     elif (FLAGS.sanity_check_pca):
         sanity_check_compressor(pca=True)
+    elif (FLAGS.copy_paste):
+        copy_paste()
     else:
         tf.app.run()
