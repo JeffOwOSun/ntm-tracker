@@ -287,18 +287,18 @@ class NTMCell(object):
             4. initial controller state
         """
         with tf.variable_scope("init_state_{}".format(batch_size)):
-            M = tf.tanh(tf.get_variable("M",
+            M = tf.random_uniform(
                     [batch_size, self.mem_size, self.mem_dim],
-                    dtype=tf.float32, initializer=initializer))
-            w = tf.sigmoid(tf.get_variable("w",
+                    minval=-1.0, maxval=1.0, dtype=tf.float32, name="M")
+            w = tf.random_uniform(
                     [batch_size,
                         self.read_head_size+self.write_head_size,
-                        self.mem_size], dtype=tf.float32,
-                    initializer=initializer))
-            read = tf.tanh(tf.get_variable("read",
+                        self.mem_size], minval=0, maxval=1.0,
+                    dtype=tf.float32, name="w")
+            read = tf.random_uniform(
                     [batch_size, self.read_head_size, self.mem_dim],
-                    dtype=tf.float32,
-                    initializer=initializer))
+                    minval=0, maxval=1.0,
+                    dtype=tf.float32, name="read")
             controller_state = self.controller.zero_state(batch_size, tf.float32)
         state = {
                 'M': M,
