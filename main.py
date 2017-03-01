@@ -1311,6 +1311,52 @@ def copy_paste(width=3, length=FLAGS.sequence_length):
     """
     add summaries
     """
+    adds = tf.stack([x['add'] for x in debugs], axis=-1)
+    tf.summary.image('adds', tf.reshape(adds,
+        [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
+            1]), max_outputs=FLAGS.batch_size)
+    erases = tf.stack([x['erase'] for x in debugs], axis=-1)
+    tf.summary.image('erases', tf.reshape(erases,
+        [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
+            1]), max_outputs=FLAGS.batch_size)
+    """
+    memory
+    """
+    Ms = tf.stack([x['M'] for x in states], axis=-1)
+    tf.summary.image('M', tf.reshape(Ms,
+        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length+1), 1]),
+        max_outputs=FLAGS.batch_size)
+    Mwrites = tf.stack([x['M_write'] for x in debugs], axis=-1)
+    tf.summary.image('M_write', tf.reshape(Mwrites,
+        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
+        max_outputs=FLAGS.batch_size)
+    Merase = tf.stack([x['M_erase'] for x in debugs], axis=-1)
+    tf.summary.image('M_erase', tf.reshape(Merase,
+        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
+        max_outputs=FLAGS.batch_size)
+    """
+    k
+    k in each step is of shape [batch, head_num, mem_dim]
+    """
+    ks = tf.stack([x['k'] for x in debugs], axis=-1)
+    tf.summary.image('k_read', tf.reshape(ks[:,:FLAGS.read_head_size,:,:],
+        [FLAGS.batch_size*FLAGS.read_head_size, FLAGS.mem_dim, total_length,
+            1]), max_outputs=FLAGS.batch_size*FLAGS.read_head_size)
+    tf.summary.image('k_write', tf.reshape(ks[:,FLAGS.read_head_size:,:,:],
+        [FLAGS.batch_size*FLAGS.write_head_size, FLAGS.mem_dim, total_length,
+            1]), max_outputs=FLAGS.batch_size*FLAGS.write_head_size)
+    """
+    similarity
+    """
+    simis = tf.stack([x['similarity'] for x in debugs], axis=-1)
+    tf.summary.image('similartiy_reads',
+            tf.reshape(simis[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
+                FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('similarity_writes',
+            tf.reshape(simis[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
+                FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
     """
     w_content_focused
     dimension of each w is [batch, num_heads, mem_size]
@@ -1431,6 +1477,8 @@ def main(_):
                 file_names_placeholder, enqueue_op, q_close_op, other_ops, get_batch)
 
 if __name__ == '__main__':
+    with open('visualize.sh', 'w') as f:
+        f.write('tensorboard --logdir="{}"'.format(real_log_dir))
     if (FLAGS.test_read_imgs):
         test_read_imgs()
     elif (FLAGS.lstm_only):

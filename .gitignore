@@ -8,6 +8,6 @@ checkpoint
 *.ckpt.data-*-of-*
 *.ckpt.index
 *.ckpt.meta
-*.pyc
 matcher_test
 *.pkl.*
+visualize.sh

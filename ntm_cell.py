@@ -129,19 +129,20 @@ class NTMCell(object):
 
                 #k is now in [batch, mem_dim * num_heads]
                 k = tf.tanh(tf.reshape(k, [-1, num_heads, self.mem_dim]), name='k')
-                #k = tf.Print(k, [k], message="k: ")
+                #k = tf.Print(k, [k, M_prev], message="k and M_prev: ")
                 #cos similarity [batch, num_heads, mem_size]
                 similarity = batched_smooth_cosine_similarity(M_prev, k)
+                #similarity = tf.Print(similarity, [similarity], message="similarity: ")
                 #focus by content, result [batch, num_heads, mem_size]
                 #beta is [batch, num_heads]
                 beta = tf.expand_dims(tf.nn.softplus(beta, name="beta"), -1)
                 #beta = tf.Print(beta, [beta], message="beta: ")
                 w_content_focused = tf.nn.softmax(tf.multiply(similarity, beta),
                         name="w_content_focused")
-                tf.summary.image('w_cf_step',
-                        tf.reshape(w_content_focused,
-                            [-1, self.mem_size, (self.read_head_size+self.write_head_size), 1]),
-                        max_outputs=32)
+                #tf.summary.image('w_cf_step',
+                #        tf.reshape(w_content_focused,
+                #            [-1, self.mem_size, (self.read_head_size+self.write_head_size), 1]),
+                #        max_outputs=32)
                 #w_content_focused = tf.Print(w_content_focused,         [w_content_focused], message="w_cf: ")
                 #import pdb; pdb.set_trace()
                 #g [batch, num_heads]
@@ -187,15 +188,17 @@ class NTMCell(object):
 
                 #now the writing
                 #erase [batch, write_head_size, mem_dim]
-                erase = 1.0 - tf.sigmoid(tf.reshape(erase,
+                erase = tf.sigmoid(tf.reshape(erase,
                     [-1,self.write_head_size,self.mem_dim]), name="erase")
                 add = tf.tanh(tf.reshape(add,
                     [-1,self.write_head_size,self.mem_dim]), name="add")
                 #w_write [batch, write_head_size, mem_size]
                 #M_erase should be [batch, mem_size, mem_dim]
                 #calculate M_erase by outer product of w_write and erase
+                #after matmul, the dimension becomes [batch, write_head,
+                #mem_size, mem_dim]
                 M_erase = \
-                tf.reduce_prod(tf.matmul(tf.expand_dims(w_write,3),
+                tf.reduce_prod(1.0 - tf.matmul(tf.expand_dims(w_write,3),
                     tf.expand_dims(erase,2)), axis=1, name="M_erase")
                 #calculate M_write by outer product of w_write and add
                 M_write = \
@@ -230,6 +233,7 @@ class NTMCell(object):
                     'bega': beta,
                     'g': g,
                     'sw': sw,
+                    'similarity': similarity,
                     'w_content_focused': w_content_focused,
                     'w_gated': w_gated,
                     'w_conv': w_conv,
