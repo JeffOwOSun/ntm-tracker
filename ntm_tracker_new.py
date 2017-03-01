@@ -19,7 +19,8 @@ class PlainNTMTracker(object):
 
     def __call__(self, inputs, state=None, scope=None):
         with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
-            state = state or self.cell.zero_state(inputs.get_shape().as_list()[0])
+            state = state or self.cell.zero_state(inputs.get_shape().as_list()[0],
+                    self.initializer)
             self.outputs = []
             self.output_logits = []
             self.states = []
