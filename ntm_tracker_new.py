@@ -1,5 +1,47 @@
 from ntm_cell import NTMCell
 import tensorflow as tf
+from utility import stack_into_tensor, unstack_into_tensorarray
+
+class LoopNTMTracker(object):
+    def __init__(self, output_dim,
+            initializer=tf.random_uniform_initializer(-.1,.1), **kwargs):
+        self.cell = NTMCell(output_dim, **kwargs)
+        self.initializer = initializer
+
+        self.sequence_length = tf.placeholder(tf.int32, name="sequence_length")
+
+    def __call__(self, inputs, state=None, scope=None):
+        with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
+            state = state or self.cell.zero_state(inputs.get_shape().as_list()[0],
+                    self.initializer)
+
+            outputs = tf.TensorArray(tf.float32, self.sequence_length)
+            output_logits = tf.TensorArray(tf.float32, self.sequence_length)
+            time = tf.constant(0, dtype=tf.int32)
+
+            final_result = tf.while_loop(
+                    cond = lambda time, *_: time < self.sequence_length,
+                    body = self._loop_body,
+                    loop_vars = (time, state, outputs, output_logits, inputs)
+                    parallel_iterations = 32,
+                    swap_memory = True)
+
+            return (stack_into_tensor(final_result[2], 1, name="outputs"),
+                    stack_into_tensor(final_result[3], 1, name="output_logits"))
+
+    def _loop_body(time, state, outputs, output_logits, inputs):
+        ntm_output, ntm_output_logit, state, debug = self.cell(
+                inputs[:,time,:], state)
+        outputs.write(time, ntm_output)
+        output_logits.write(time, ntm_output_logit)
+
+        return (time+1, state, outputs, output_logits, inputs)
+
+
+
+
+
+
 
 class PlainNTMTracker(object):
     """
