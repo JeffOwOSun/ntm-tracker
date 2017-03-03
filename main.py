@@ -8,7 +8,7 @@ import os
 
 from vgg import vgg_16
 
-from ntm_tracker_new import NTMTracker, PlainNTMTracker
+from ntm_tracker_new import NTMTracker, PlainNTMTracker, LoopNTMTracker
 from ntm_cell import NTMCell
 from ops import batched_smooth_cosine_similarity
 from sklearn.decomposition import PCA
@@ -46,6 +46,7 @@ flags.DEFINE_float("decay", 0.95, "learning rate")
 flags.DEFINE_integer("hidden_size", 100, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 10, "number of LSTM cells")
 flags.DEFINE_string("tag", "", "tag for the log record")
+flags.DEFINE_string("ckpt_path", "", "path for the ckpt file to be restored")
 flags.DEFINE_integer("log_interval", 10, "number of epochs before log")
 flags.DEFINE_float("init_scale", 0.05, "initial range for weights")
 flags.DEFINE_integer("read_head_size", 3, "number of read heads")
@@ -153,23 +154,23 @@ def train_and_val_sequential(
         train_op, loss_op, enqueue_op, q_close_op,
         #input placeholders
         file_names_placeholder, target_ph, gt_ph,
-        #intermediate tensors
-        labels, inputs, state_tensor, zero_state,
-        #intermediate placeholders
-        labels_ph, inputs_ph, state_ph,
         output_sigmoids,
-        output_gather,
-        labels_summary, loss_summary, outputs_summary,
+        merged_summary,
+        global_step,
         other_ops=[],
         get_batch=default_get_batch):
     #check_op = tf.add_check_numerics_ops()
     with tf.Session() as sess:
         print('session started')
+        saver = tf.train.Saver()
         writer = tf.summary.FileWriter(real_log_dir, sess.graph)
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
         # initialize variables
-        sess.run(tf.initialize_all_variables())
+        if FLAGS.ckpt_path:
+            saver.restore(sess, FLAGS.ckpt_path)
+        else:
+            sess.run(tf.initialize_all_variables())
         print("start to run the training.")
         """
         1. get the statistics
@@ -195,7 +196,6 @@ def train_and_val_sequential(
         train_seqs = generated_sequences[-num_train:]
         print('{} train seqs, {} test seqs'.format(
             len(train_seqs), len(test_seqs)))
-        sequence = 0
         step = 0
         num_epochs = FLAGS.num_epochs
         for epoch in xrange(num_epochs):
@@ -212,99 +212,29 @@ def train_and_val_sequential(
                             frame_names}
                 #print(feed_dict)
                 sess.run(enqueue_op, feed_dict=feed_dict)
-                #get the intermediate tensors
-                """
-                pre-run: get the real inputs and labels
-                """
-                real_inputs, real_labels, real_zero_state,\
-                real_labels_summary = sess.run([
-                    inputs, labels, zero_state, labels_summary],
-                        feed_dict = {
-                            target_ph: real_gts[:,0,:],
-                            gt_ph: real_gts,
-                            }
-                        )
-                #import pdb; pdb.set_trace()
                 #now run the model
-                state = real_zero_state
-                idx = 0
-                seq_output = []
-                while idx < real_inputs.shape[1]:
-                    #chop the inputs and labels
-                    feed_dict = {state_ph[k]:state[k] for k in
-                            state_ph.keys()}
-                    feed_dict.update({
-                            labels_ph: real_labels[:,idx:idx+FLAGS.model_length,:],
-                            inputs_ph: real_inputs[:,idx:idx+FLAGS.model_length,:],
-                            })
-                    #run the session
-                    """
-                    run: compute the output and train the model
-                    """
-                    ret = sess.run(
-                            [loss_op, state_tensor, loss_summary, train_op,
-                                output_sigmoids],
-                            feed_dict=feed_dict
-                            )
-                    #import pdb; pdb.set_trace()
-                    real_loss, state, summary, _, outputs = ret
-                    seq_output.append(outputs)
-                    writer.add_summary(summary, step)
-                    if step % FLAGS.log_interval == 0:
-                        print("{}: training loss {}".format(step, real_loss))
-                    idx += FLAGS.model_length
-                    step += 1
-                seq_output = np.concatenate(seq_output, axis=1)
-                real_outputs_summary = sess.run(outputs_summary,
-                        feed_dict={output_gather: seq_output})
-                writer.add_summary(real_labels_summary, sequence)
-                writer.add_summary(real_outputs_summary, sequence)
-                sequence += 1
-
-        step = 0
-        accumu_loss = 0
-        index = 0
-        while index < len(test_seqs):
-            frame_names, real_gts, index = get_batch(index,
-                    FLAGS.batch_size, FLAGS.sequence_length, test_seqs)
-            feed_dict = {file_names_placeholder:
-                        frame_names}
-            sess.run(enqueue_op, feed_dict=feed_dict)
-            #get the intermediate tensors
-            real_inputs, real_labels, real_zero_state = sess.run([
-                inputs, labels, zero_state],
-                    feed_dict = {
+                """
+                run: compute the output and train the model
+                """
+                feed_dict = {
                         target_ph: real_gts[:,0,:],
-                        gt_ph: real_gts,
+                        gt_ph: real_gts
                         }
-                    )
-
-            #now run the model
-            state = real_zero_state
-            idx = 0
-            while idx < real_inputs.shape[1]:
-                #chop the inputs and labels
-                feed_dict = {state_ph[k]:state[k] for k in
-                        state_ph.keys()}
-                feed_dict.update({
-                        labels_ph: real_labels[:,idx:idx+FLAGS.model_length,:],
-                        inputs_ph: real_inputs[:,idx:idx+FLAGS.model_length,:],
-                        })
-                #run the session
-                real_loss, state = sess.run(
-                        [loss_op, state_tensor],
+                loss, summary, _ = sess.run(
+                        [loss_op, merged_summary, train_op],
                         feed_dict=feed_dict
                         )
+                writer.add_summary(summary, step)
                 if step % FLAGS.log_interval == 0:
-                    print("{}: test loss {}".format(step, real_loss))
-                idx += FLAGS.model_length
+                    print("{} training loss: {}".format(step, loss))
                 step += 1
-                accumu_loss += real_loss
-        print("average testing loss {}".format(accumu_loss / float(step)))
-        saver = tf.train.Saver()
+
+        #TODO: add testing epochs
         save_path = saver.save(sess, os.path.join(real_log_dir,
-            "model.ckpt"))
+            "model.ckpt"), global_step=global_step)
         print("model saved to {}".format(save_path))
+        with open("save_path.txt", "w") as f:
+            f.write(save_path)
 
         sess.run(q_close_op) #close the queue
         coord.request_stop()
@@ -704,14 +634,17 @@ def ntm_sequential():
     features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
         batch_img}, return_elements=[FLAGS.feature_layer])[0]
     features_dim = features.get_shape().as_list()
+    num_channels = features_dim[-1]
     print('features_dim', features_dim)
     num_features = features_dim[1]*features_dim[2]
-    #"""compress input dimensions"""
-    #w = tf.get_variable('input_compressor_w',
-    #        shape=(1,1,features_dim[-1],FLAGS.compress_dim), dtype=tf.float32,
-    #        initializer=tf.contrib.layers.xavier_initializer())
-    #features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
-    #        name="input_compressor")
+    if FLAGS.compressor:
+        """compress input dimensions"""
+        w = tf.get_variable('input_compressor_w',
+                shape=(1,1,features_dim[-1],FLAGS.compress_dim), dtype=tf.float32,
+                initializer=tf.contrib.layers.xavier_initializer())
+        features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
+                name="input_compressor")
+        num_channels = FLAGS.compress_dim
     """
     the inputs;
     features is of shape [batch * seq_length, 28, 28, 128]
@@ -720,17 +653,16 @@ def ntm_sequential():
     """
 
     inputs = tf.reshape(features, shape=[FLAGS.batch_size,
-        FLAGS.sequence_length, num_features, features_dim[-1]], name="reshaped_inputs")
+        FLAGS.sequence_length, num_features, num_channels], name="reshaped_inputs")
     #print('reshaped inputs:', inputs.get_shape())
     """
     placeholder to accept target indicator input
     because it's only for the 0th frame, so it's 2d
-    in the end we will reshape it to [batch, num_features, 1]
     """
     target_ph = tf.placeholder(tf.float32,
             shape=[FLAGS.batch_size, num_features], name="target")
     """
-    build the tracker
+    build the tracker inputs
     the inputs should be a matrix of [batch_size, xxx, 128+1+1]
     xxx:
         [0:num_features]: first frame, all features
@@ -744,7 +676,8 @@ def ntm_sequential():
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
     """
     total_steps = num_features + (FLAGS.sequence_length - 1) * (2 * num_features + 1)
-    pad_steps = FLAGS.model_length - (total_steps % FLAGS.model_length) if total_steps % FLAGS.model_length else 0
+    pad_steps = 0
+    #pad_steps = FLAGS.model_length - (total_steps % FLAGS.model_length) if total_steps % FLAGS.model_length else 0
     print("constructing inputs...")
     #shape [batch, seq_len, num_features, 130]
     inputs_padded = tf.concat_v2([inputs, tf.zeros([FLAGS.batch_size,
@@ -752,7 +685,7 @@ def ntm_sequential():
     #shape [batch, sequence_length-1, num_features, 130]
     inputs_no_zeroth = inputs_padded[:, 1:, :, :]
     #shape [batch, 1, 1, 128]
-    dummy_feature = tf.zeros([FLAGS.batch_size, 1, 1, features_dim[-1]])
+    dummy_feature = tf.zeros([FLAGS.batch_size, 1, 1, num_channels])
     #shape [batch, 1, 1, 130]
     frame_delimiter = tf.concat_v2([
             dummy_feature,
@@ -778,7 +711,7 @@ def ntm_sequential():
     inputs_no_zeroth = tf.reshape(tf.concat_v2(
             [inputs_no_zeroth, feature_delimiters], 3),
             [FLAGS.batch_size, FLAGS.sequence_length-1, num_features*2,
-                features_dim[-1]+2])
+                num_channels+2])
     #now insert the frame delimiters
     inputs_no_zeroth = tf.concat_v2(
             [frame_delimiters, inputs_no_zeroth], 2)
@@ -787,8 +720,7 @@ def ntm_sequential():
             [
                 FLAGS.batch_size,
                 (FLAGS.sequence_length-1)*(2*num_features+1),
-                features_dim[-1]+2
-            ])
+                num_channels+2])
     """
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
     """
@@ -870,12 +802,28 @@ def ntm_sequential():
         labels_pad_steps = tf.zeros([FLAGS.batch_size, pad_steps])
         labels = tf.concat_v2([labels, labels_pad_steps], 1)
     labels = tf.expand_dims(labels, -1)
+
+    print("constructing tracker...")
+    """the tracker"""
+    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
+    tracker = LoopNTMTracker(total_steps, 1,
+            initializer,
+            mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
+            controller_num_layers=FLAGS.num_layers,
+            controller_hidden_size=FLAGS.hidden_size,
+            read_head_size=FLAGS.read_head_size,
+            write_head_size=FLAGS.write_head_size,
+            write_first=FLAGS.write_first,)
+    """
+    shape of outputs: [batch, model_length, 1]
+    """
+    outputs, output_logits = tracker(inputs)
+    output_sigmoids = tf.sigmoid(output_logits)
+
     """
     now the subgraph to convert model output sequence to perceivable heatmaps
     """
-    output_gather_ph = tf.placeholder(tf.float32,
-            shape=labels.get_shape(), name="output_gatherer")
-    output_gather = tf.squeeze(output_gather_ph)
+    output_gather = tf.squeeze(output_sigmoids, axis=2)
     """remove the padding at end"""
     output_gather = output_gather[:,:total_steps]
     """remove the output for first frame"""
@@ -891,29 +839,6 @@ def ntm_sequential():
                 [FLAGS.batch_size*(FLAGS.sequence_length-1),
                     features_dim[1],features_dim[2],1]),
         max_outputs=FLAGS.batch_size*(FLAGS.sequence_length-1))
-
-    print("constructing tracker...")
-    """the tracker"""
-    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
-    tracker = PlainNTMTracker(FLAGS.model_length, 1,
-            initializer,
-            mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
-            controller_num_layers=FLAGS.num_layers,
-            controller_hidden_size=FLAGS.hidden_size,
-            read_head_size=FLAGS.read_head_size,
-            write_head_size=FLAGS.write_head_size,
-            write_first=FLAGS.write_first,)
-    zero_state = tracker.cell.zero_state(FLAGS.batch_size)
-    state_ph = tracker.cell.state_placeholder(FLAGS.batch_size)
-    inputs_ph = tf.placeholder(tf.float32, shape=[FLAGS.batch_size,
-        FLAGS.model_length, inputs.get_shape().as_list()[-1]],
-        name="model_input_ph")
-    """
-    shape of outputs: [batch, model_length, 1]
-    """
-    outputs, output_logits, states, debugs = tracker(inputs_ph, state_ph)
-    state = states[-1]
-
     #print('output_logits shape:', output_logits.get_shape())
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
@@ -925,40 +850,33 @@ def ntm_sequential():
     #        )) / ((2*FLAGS.sequence_length-1) * FLAGS.batch_size)
     print("constructing loss...")
     """log loss"""
-    labels_ph = tf.placeholder(dtype=tf.float32,
-            shape=[FLAGS.batch_size, FLAGS.model_length, 1],
-            name="label_ph")
-    output_sigmoids = tf.sigmoid(output_logits)
-    loss_op = tf.losses.log_loss(labels_ph, output_sigmoids)
+    loss_op = tf.losses.log_loss(labels, output_sigmoids)
     loss_summary = tf.summary.scalar('loss', loss_op)
     """training op"""
     tvars = tf.trainable_variables()
     # the gradient tensors
+    global_step = tf.Variable(0, name='global_step', trainable=False)
     grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
             FLAGS.max_gradient_norm)
     optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
             decay=FLAGS.decay, momentum=FLAGS.momentum)
     train_op = optimizer.apply_gradients(
             zip(grads, tvars),
-            global_step = tf.contrib.framework.get_or_create_global_step())
-    #merged_summary = tf.summary.merge_all()
+            global_step = global_step)
+    merged_summary = tf.summary.merge_all()
 
     return (#ops
             train_op, loss_op, enqueue_op, q_close_op,
             #input placeholders
             file_names_placeholder, target_ph, gt_ph,
-            #intermediate tensors
-            labels, inputs, state, zero_state,
-            #intermediate placeholders
-            labels_ph, inputs_ph, state_ph,
             #terminal tensors,
             output_sigmoids,
-            #terminal placeholders
-            output_gather_ph,
             #summaries
-            labels_summary, loss_summary, outputs_summary,
+            merged_summary,
+            #global step variable
+            global_step,
             #other ops
-            [outputs, output_logits, states, debugs],
+            [outputs, output_logits],
             #get batch function
             default_get_batch)
 
@@ -1297,7 +1215,7 @@ def copy_paste(width=3, length=FLAGS.sequence_length):
     tf.summary.image('inputs', tf.reshape(inputs, [FLAGS.batch_size,
         width+1, total_length, 1]), max_outputs=FLAGS.batch_size)
     initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
-    ntm = PlainNTMTracker(total_length, width+1,
+    ntm = LoopNTMTracker(total_length, width+1,
             initializer,
             mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
             controller_num_layers=FLAGS.num_layers,
@@ -1305,115 +1223,125 @@ def copy_paste(width=3, length=FLAGS.sequence_length):
             read_head_size=FLAGS.read_head_size,
             write_head_size=FLAGS.write_head_size,
             write_first=FLAGS.write_first,)
+    #ntm = PlainNTMTracker(total_length, width+1,
+    #        initializer,
+    #        mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
+    #        controller_num_layers=FLAGS.num_layers,
+    #        controller_hidden_size=FLAGS.hidden_size,
+    #        read_head_size=FLAGS.read_head_size,
+    #        write_head_size=FLAGS.write_head_size,
+    #        write_first=FLAGS.write_first,)
     #input will be transposed to [batch, length, width+1]
-    outputs, output_logits, states, debugs = ntm(tf.transpose(inputs,
+    outputs, output_logits = ntm(tf.transpose(inputs,
         perm=[0,2,1]))
+    #outputs, output_logits, states, debugs = ntm(tf.transpose(inputs,
+    #    perm=[0,2,1]))
     """
     add summaries
     """
-    adds = tf.stack([x['add'] for x in debugs], axis=-1)
-    tf.summary.image('adds', tf.reshape(adds,
-        [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
-            1]), max_outputs=FLAGS.batch_size)
-    erases = tf.stack([x['erase'] for x in debugs], axis=-1)
-    tf.summary.image('erases', tf.reshape(erases,
-        [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
-            1]), max_outputs=FLAGS.batch_size)
-    """
-    memory
-    """
-    Ms = tf.stack([x['M'] for x in states], axis=-1)
-    tf.summary.image('M', tf.reshape(Ms,
-        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length+1), 1]),
-        max_outputs=FLAGS.batch_size)
-    Mwrites = tf.stack([x['M_write'] for x in debugs], axis=-1)
-    tf.summary.image('M_write', tf.reshape(Mwrites,
-        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
-        max_outputs=FLAGS.batch_size)
-    Merase = tf.stack([x['M_erase'] for x in debugs], axis=-1)
-    tf.summary.image('M_erase', tf.reshape(Merase,
-        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
-        max_outputs=FLAGS.batch_size)
-    """
-    k
-    k in each step is of shape [batch, head_num, mem_dim]
-    """
-    ks = tf.stack([x['k'] for x in debugs], axis=-1)
-    tf.summary.image('k_read', tf.reshape(ks[:,:FLAGS.read_head_size,:,:],
-        [FLAGS.batch_size*FLAGS.read_head_size, FLAGS.mem_dim, total_length,
-            1]), max_outputs=FLAGS.batch_size*FLAGS.read_head_size)
-    tf.summary.image('k_write', tf.reshape(ks[:,FLAGS.read_head_size:,:,:],
-        [FLAGS.batch_size*FLAGS.write_head_size, FLAGS.mem_dim, total_length,
-            1]), max_outputs=FLAGS.batch_size*FLAGS.write_head_size)
-    """
-    similarity
-    """
-    simis = tf.stack([x['similarity'] for x in debugs], axis=-1)
-    tf.summary.image('similartiy_reads',
-            tf.reshape(simis[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
-                FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    tf.summary.image('similarity_writes',
-            tf.reshape(simis[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
-                FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    """
-    w_content_focused
-    dimension of each w is [batch, num_heads, mem_size]
-    """
-    print("debugs", len(states), len(debugs))
-    ws = tf.stack([x['w_content_focused'] for x in debugs], axis=-1)
-    print("shape of ws {}".format(ws.get_shape().as_list()))
-    tf.summary.image('w_cf_reads',
-            tf.reshape(ws[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
-                FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    tf.summary.image('w_cf_writes',
-            tf.reshape(ws[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
-                FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    """w"""
-    ws = tf.stack([x['w'] for x in states], axis=-1)
-    tf.summary.image('w_reads',
-            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-                [FLAGS.batch_size,
-                    FLAGS.mem_size*FLAGS.read_head_size, total_length+1, 1]),
-            max_outputs=FLAGS.batch_size)
-    tf.summary.image('w_writes',
-            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-                [FLAGS.batch_size,
-                    FLAGS.mem_size*FLAGS.write_head_size, total_length+1, 1]),
-            max_outputs=FLAGS.batch_size)
-    """w_gated"""
-    ws = tf.stack([x['w_gated'] for x in debugs], axis=-1)
-    tf.summary.image('w_gated_reads',
-            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-                [FLAGS.batch_size, -1, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    tf.summary.image('w_gated_writes',
-            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-                [FLAGS.batch_size, -1, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    """w_conv"""
-    ws = tf.stack([x['w_conv'] for x in debugs], axis=-1)
-    tf.summary.image('w_conv_reads',
-            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-                [FLAGS.batch_size, -1, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    tf.summary.image('w_conv_writes',
-            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-                [FLAGS.batch_size, -1, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    """w_conv_powed"""
-    ws = tf.stack([x['w_conv_powed'] for x in debugs], axis=-1)
-    tf.summary.image('w_conv_powed_reads',
-            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-                [FLAGS.batch_size, -1, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
-    tf.summary.image('w_conv_powed_writes',
-            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-                [FLAGS.batch_size, -1, total_length, 1]),
-            max_outputs=FLAGS.batch_size)
+    #adds = tf.stack([x['add'] for x in debugs], axis=-1)
+    #tf.summary.image('adds', tf.reshape(adds,
+    #    [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
+    #        1]), max_outputs=FLAGS.batch_size)
+    #erases = tf.stack([x['erase'] for x in debugs], axis=-1)
+    #tf.summary.image('erases', tf.reshape(erases,
+    #    [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
+    #        1]), max_outputs=FLAGS.batch_size)
+    #"""
+    #memory
+    #"""
+    #Ms = tf.stack([x['M'] for x in states], axis=-1)
+    #tf.summary.image('M', tf.reshape(Ms,
+    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length+1), 1]),
+    #    max_outputs=FLAGS.batch_size)
+    #Mwrites = tf.stack([x['M_write'] for x in debugs], axis=-1)
+    #tf.summary.image('M_write', tf.reshape(Mwrites,
+    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
+    #    max_outputs=FLAGS.batch_size)
+    #Merase = tf.stack([x['M_erase'] for x in debugs], axis=-1)
+    #tf.summary.image('M_erase', tf.reshape(Merase,
+    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
+    #    max_outputs=FLAGS.batch_size)
+    #"""
+    #k
+    #k in each step is of shape [batch, head_num, mem_dim]
+    #"""
+    #ks = tf.stack([x['k'] for x in debugs], axis=-1)
+    #tf.summary.image('k_read', tf.reshape(ks[:,:FLAGS.read_head_size,:,:],
+    #    [FLAGS.batch_size*FLAGS.read_head_size, FLAGS.mem_dim, total_length,
+    #        1]), max_outputs=FLAGS.batch_size*FLAGS.read_head_size)
+    #tf.summary.image('k_write', tf.reshape(ks[:,FLAGS.read_head_size:,:,:],
+    #    [FLAGS.batch_size*FLAGS.write_head_size, FLAGS.mem_dim, total_length,
+    #        1]), max_outputs=FLAGS.batch_size*FLAGS.write_head_size)
+    #"""
+    #similarity
+    #"""
+    #simis = tf.stack([x['similarity'] for x in debugs], axis=-1)
+    #tf.summary.image('similartiy_reads',
+    #        tf.reshape(simis[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
+    #            FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #tf.summary.image('similarity_writes',
+    #        tf.reshape(simis[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
+    #            FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #"""
+    #w_content_focused
+    #dimension of each w is [batch, num_heads, mem_size]
+    #"""
+    #print("debugs", len(states), len(debugs))
+    #ws = tf.stack([x['w_content_focused'] for x in debugs], axis=-1)
+    #print("shape of ws {}".format(ws.get_shape().as_list()))
+    #tf.summary.image('w_cf_reads',
+    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
+    #            FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #tf.summary.image('w_cf_writes',
+    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
+    #            FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #"""w"""
+    #ws = tf.stack([x['w'] for x in states], axis=-1)
+    #tf.summary.image('w_reads',
+    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+    #            [FLAGS.batch_size,
+    #                FLAGS.mem_size*FLAGS.read_head_size, total_length+1, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #tf.summary.image('w_writes',
+    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+    #            [FLAGS.batch_size,
+    #                FLAGS.mem_size*FLAGS.write_head_size, total_length+1, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #"""w_gated"""
+    #ws = tf.stack([x['w_gated'] for x in debugs], axis=-1)
+    #tf.summary.image('w_gated_reads',
+    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+    #            [FLAGS.batch_size, -1, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #tf.summary.image('w_gated_writes',
+    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+    #            [FLAGS.batch_size, -1, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #"""w_conv"""
+    #ws = tf.stack([x['w_conv'] for x in debugs], axis=-1)
+    #tf.summary.image('w_conv_reads',
+    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+    #            [FLAGS.batch_size, -1, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #tf.summary.image('w_conv_writes',
+    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+    #            [FLAGS.batch_size, -1, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #"""w_conv_powed"""
+    #ws = tf.stack([x['w_conv_powed'] for x in debugs], axis=-1)
+    #tf.summary.image('w_conv_powed_reads',
+    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+    #            [FLAGS.batch_size, -1, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
+    #tf.summary.image('w_conv_powed_writes',
+    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+    #            [FLAGS.batch_size, -1, total_length, 1]),
+    #        max_outputs=FLAGS.batch_size)
     output_sigmoid = tf.sigmoid(tf.transpose(output_logits, perm=[0,2,1]))
     tf.summary.image('output_sigmoid', tf.reshape(output_sigmoid, [FLAGS.batch_size,
         width+1, total_length, 1]), max_outputs=FLAGS.batch_size)

@@ -50,7 +50,8 @@ class NTMCell(object):
                 state_is_tuple=False)
 
 
-    def __call__(self, inputs, prev_state, scope=None):
+    def __call__(self, inputs, prev_state, M_prev=None, w_prev=None,
+            read_prev=None, controller_state=None, scope=None):
         """
         Args:
             inputs: Input should be extracted features of VGG network.
@@ -80,17 +81,18 @@ class NTMCell(object):
             """
             #memory value of previous timestep
             #[batch, mem_size, mem_dim]
-            M_prev = prev_state['M']
-            #M_prev = tf.Print(M_prev, [M_prev], message="M_prev: ")
-            w_prev = prev_state['w']
-            #w_prev = tf.Print(w_prev, [w_prev], message="w_prev: ")
-            read_prev = prev_state['read'] #read value history
-            #read_prev = tf.Print(read_prev, [read_prev], message="read_prev: ")
-            #last output. It's a list because controller is an LSTM with multiple cells
-            """
-            controller state
-            """
-            controller_state = prev_state['controller_state']
+            if prev_state is not None:
+                M_prev = prev_state['M']
+                #M_prev = tf.Print(M_prev, [M_prev], message="M_prev: ")
+                w_prev = prev_state['w']
+                #w_prev = tf.Print(w_prev, [w_prev], message="w_prev: ")
+                read_prev = prev_state['read'] #read value history
+                #read_prev = tf.Print(read_prev, [read_prev], message="read_prev: ")
+                #last output. It's a list because controller is an LSTM with multiple cells
+                """
+                controller state
+                """
+                controller_state = prev_state['controller_state']
 
             #shape of controller_output: [batch, controller_hidden_dim]
             #shape of inputs: [batch, num_channels*num_features]
@@ -247,7 +249,8 @@ class NTMCell(object):
                     'M_erase': M_erase,
                     }
 
-        return ntm_output, ntm_output_logit, state, debug
+        return (ntm_output, ntm_output_logit, state, debug, M, w, read,
+                controller_state)
 
     def state_placeholder(self, batch_size):
         with tf.variable_scope("init_state_ph"):

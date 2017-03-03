@@ -1,47 +1,51 @@
 from ntm_cell import NTMCell
 import tensorflow as tf
 from utility import stack_into_tensor, unstack_into_tensorarray
-
 class LoopNTMTracker(object):
-    def __init__(self, output_dim,
+    def __init__(self, sequence_length, output_dim,
             initializer=tf.random_uniform_initializer(-.1,.1), **kwargs):
         self.cell = NTMCell(output_dim, **kwargs)
         self.initializer = initializer
+        self.sequence_length = sequence_length
+        #self.sequence_length = tf.placeholder(tf.int32, name="sequence_length")
 
-        self.sequence_length = tf.placeholder(tf.int32, name="sequence_length")
 
     def __call__(self, inputs, state=None, scope=None):
         with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
             state = state or self.cell.zero_state(inputs.get_shape().as_list()[0],
                     self.initializer)
+            inputs = unstack_into_tensorarray(inputs, 1)
 
             outputs = tf.TensorArray(tf.float32, self.sequence_length)
             output_logits = tf.TensorArray(tf.float32, self.sequence_length)
             time = tf.constant(0, dtype=tf.int32)
+            M = state['M']
+            w = state['w']
+            read = state['read']
+            controller_state = state['controller_state']
 
             final_result = tf.while_loop(
                     cond = lambda time, *_: time < self.sequence_length,
                     body = self._loop_body,
-                    loop_vars = (time, state, outputs, output_logits, inputs)
+                    loop_vars = (time, outputs, output_logits, inputs, M, w,
+                        read, controller_state),
                     parallel_iterations = 32,
                     swap_memory = True)
 
-            return (stack_into_tensor(final_result[2], 1, name="outputs"),
-                    stack_into_tensor(final_result[3], 1, name="output_logits"))
+            return (stack_into_tensor(final_result[1], 1, name="outputs"),
+                    stack_into_tensor(final_result[2], 1, name="output_logits"))
 
-    def _loop_body(time, state, outputs, output_logits, inputs):
-        ntm_output, ntm_output_logit, state, debug = self.cell(
-                inputs[:,time,:], state)
-        outputs.write(time, ntm_output)
-        output_logits.write(time, ntm_output_logit)
+    def _loop_body(self, time, outputs, output_logits, inputs, M, w,
+                        read, controller_state):
+        step_input = inputs.read(time)
+        ntm_output, ntm_output_logit, _, _, M, w, read, controller_state = self.cell(
+                step_input, None, M_prev=M, w_prev=w, read_prev=read,
+                controller_state=controller_state)
+        outputs = outputs.write(time, ntm_output)
+        output_logits = output_logits.write(time, ntm_output_logit)
 
-        return (time+1, state, outputs, output_logits, inputs)
-
-
-
-
-
-
+        return (time+1, outputs, output_logits, inputs, M, w, read,
+                controller_state)
 
 class PlainNTMTracker(object):
     """
