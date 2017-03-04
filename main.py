@@ -58,6 +58,7 @@ flags.DEFINE_boolean("sanity_check", False, "check if dataset is correct")
 flags.DEFINE_boolean("sanity_check_compressor", False, "check if compressor is correct")
 flags.DEFINE_boolean("sanity_check_trained_compressor", False, "check if compressor is correct")
 flags.DEFINE_boolean("sanity_check_pca", False, "check if compressor is correct")
+flags.DEFINE_boolean("compressor", False, "whether to use compressor.  If false, ignores compress_dim")
 flags.DEFINE_boolean("copy_paste", False, "perform copy_paste task to check if the ntm is correct")
 flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels after input compression")
 flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
@@ -645,6 +646,7 @@ def ntm_sequential():
         features = tf.nn.conv2d(features, w, strides=(1,1,1,1), padding="VALID",
                 name="input_compressor")
         num_channels = FLAGS.compress_dim
+    print("num_channels:", num_channels)
     """
     the inputs;
     features is of shape [batch * seq_length, 28, 28, 128]
@@ -817,7 +819,7 @@ def ntm_sequential():
     """
     shape of outputs: [batch, model_length, 1]
     """
-    outputs, output_logits = tracker(inputs)
+    outputs, output_logits, Ms, ws, reads = tracker(inputs)
     output_sigmoids = tf.sigmoid(output_logits)
 
     """
@@ -1010,72 +1012,6 @@ def ntm_active_resize():
         round(FLAGS.bbox_crop_ratio*features_dim[2])],
             dtype=tf.float32, name="bbox_grid")
 
-#def sanity_check():
-#    """
-#    instead of training a real NTM, try to make sure we can generate heat maps
-#    by dot producting the features
-#    """
-#    """get the inputs"""
-#    file_names_placeholder, enqueue_op, q_close_op, batch_img =\
-#            read_imgs(FLAGS.batch_size*FLAGS.sequence_length)
-#    """import VGG"""
-#    vgg_graph_def = tf.GraphDef()
-#    with open(FLAGS.vgg_model_frozen, "rb") as f:
-#        vgg_graph_def.ParseFromString(f.read())
-#    """the features"""
-#    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
-#        batch_img}, return_elements=[FLAGS.feature_layer])[0]
-#    features_dim = features.get_shape().as_list()
-#    num_features = features_dim[1]*features_dim[2]
-#    num_channels = features_dim[3]
-#    #the features [batch*length, 28, 28, 512]
-#    features = tf.reshape(features,
-#            [FLAGS.batch_size, FLAGS.sequence_length, num_features, num_channels])
-#    gt_ph = tf.placeholder(tf.float32,
-#        shape=[FLAGS.batch_size, FLAGS.sequence_length, num_features], name="ground_truth")
-#    # [batch, 1, num_channels]
-#    first_frame_feature = tf.matmul(
-#            tf.expand_dims(gt_ph[:,0,:], -1),
-#            features[:,0,:,:], transpose_a=True)
-#    # [batch, 1, seq_len*num_features]
-#    similarity = batched_smooth_cosine_similarity(
-#            tf.reshape(features, [FLAGS.batch_size,
-#                FLAGS.sequence_length*num_features, num_channels]),
-#            first_frame_feature)
-#    similarity = tf.reshape(similarity, [FLAGS.batch_size,
-#        FLAGS.sequence_length, num_features])
-#    tf.summary.image("similarity", tf.reshape(similarity,
-#        [FLAGS.batch_size*FLAGS.sequence_length, features_dim[1],
-#            features_dim[2], 1]),
-#        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
-#    tf.summary.image("ground_truth", tf.reshape(gt_ph,
-#        [FLAGS.batch_size*FLAGS.sequence_length, features_dim[1],
-#            features_dim[2], 1]),
-#        max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
-#    merged_summary = tf.summary.merge_all()
-#
-#    with tf.Session() as sess:
-#        writer = tf.summary.FileWriter(real_log_dir, sess.graph)
-#        coord = tf.train.Coordinator()
-#        threads = tf.train.start_queue_runners(coord=coord)
-#        sess.run(tf.initialize_all_variables())
-#        with open('generated_sequences.pkl', 'r') as f:
-#            generated_sequences = pickle.load(f)
-#        generated_sequences = [x for x in generated_sequences if x[-2] >=
-#                FLAGS.sequence_length]
-#        frame_names, real_gts, index = default_get_batch(0,
-#                FLAGS.batch_size, FLAGS.sequence_length, generated_sequences)
-#        feed_dict = {file_names_placeholder:
-#                    frame_names}
-#        sess.run(enqueue_op, feed_dict=feed_dict)
-#        print(real_gts.shape, gt_ph.get_shape().as_list())
-#        summary = sess.run(merged_summary, feed_dict = {
-#            gt_ph: real_gts
-#            })
-#        writer.add_summary(summary, 0)
-#        sess.run(q_close_op) #close the queue
-#        coord.request_stop()
-#        coord.join(threads)
 
 def sanity_check_compressor(ckpt_path='/tmp/ntm-tracker/2017-02-18 11:28:18.000892batchsize16-seqlen2-numlayer10-hidden400-epoch100-lr1e-2-rw10-2step-write1st-augmentegt/model.ckpt',
         compressor=False, trained=False, pca=False):
@@ -1232,116 +1168,33 @@ def copy_paste(width=3, length=FLAGS.sequence_length):
     #        write_head_size=FLAGS.write_head_size,
     #        write_first=FLAGS.write_first,)
     #input will be transposed to [batch, length, width+1]
-    outputs, output_logits = ntm(tf.transpose(inputs,
+    outputs, output_logits, Ms, ws, reads = ntm(tf.transpose(inputs,
         perm=[0,2,1]))
     #outputs, output_logits, states, debugs = ntm(tf.transpose(inputs,
     #    perm=[0,2,1]))
     """
     add summaries
     """
-    #adds = tf.stack([x['add'] for x in debugs], axis=-1)
-    #tf.summary.image('adds', tf.reshape(adds,
-    #    [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
-    #        1]), max_outputs=FLAGS.batch_size)
-    #erases = tf.stack([x['erase'] for x in debugs], axis=-1)
-    #tf.summary.image('erases', tf.reshape(erases,
-    #    [FLAGS.batch_size, FLAGS.write_head_size*FLAGS.mem_dim, total_length,
-    #        1]), max_outputs=FLAGS.batch_size)
-    #"""
-    #memory
-    #"""
-    #Ms = tf.stack([x['M'] for x in states], axis=-1)
-    #tf.summary.image('M', tf.reshape(Ms,
-    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length+1), 1]),
-    #    max_outputs=FLAGS.batch_size)
-    #Mwrites = tf.stack([x['M_write'] for x in debugs], axis=-1)
-    #tf.summary.image('M_write', tf.reshape(Mwrites,
-    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
-    #    max_outputs=FLAGS.batch_size)
-    #Merase = tf.stack([x['M_erase'] for x in debugs], axis=-1)
-    #tf.summary.image('M_erase', tf.reshape(Merase,
-    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*(total_length), 1]),
-    #    max_outputs=FLAGS.batch_size)
-    #"""
-    #k
-    #k in each step is of shape [batch, head_num, mem_dim]
-    #"""
-    #ks = tf.stack([x['k'] for x in debugs], axis=-1)
-    #tf.summary.image('k_read', tf.reshape(ks[:,:FLAGS.read_head_size,:,:],
-    #    [FLAGS.batch_size*FLAGS.read_head_size, FLAGS.mem_dim, total_length,
-    #        1]), max_outputs=FLAGS.batch_size*FLAGS.read_head_size)
-    #tf.summary.image('k_write', tf.reshape(ks[:,FLAGS.read_head_size:,:,:],
-    #    [FLAGS.batch_size*FLAGS.write_head_size, FLAGS.mem_dim, total_length,
-    #        1]), max_outputs=FLAGS.batch_size*FLAGS.write_head_size)
-    #"""
-    #similarity
-    #"""
-    #simis = tf.stack([x['similarity'] for x in debugs], axis=-1)
-    #tf.summary.image('similartiy_reads',
-    #        tf.reshape(simis[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
-    #            FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #tf.summary.image('similarity_writes',
-    #        tf.reshape(simis[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
-    #            FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #"""
-    #w_content_focused
-    #dimension of each w is [batch, num_heads, mem_size]
-    #"""
-    #print("debugs", len(states), len(debugs))
-    #ws = tf.stack([x['w_content_focused'] for x in debugs], axis=-1)
-    #print("shape of ws {}".format(ws.get_shape().as_list()))
-    #tf.summary.image('w_cf_reads',
-    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:], [FLAGS.batch_size,
-    #            FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #tf.summary.image('w_cf_writes',
-    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:], [FLAGS.batch_size,
-    #            FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #"""w"""
-    #ws = tf.stack([x['w'] for x in states], axis=-1)
-    #tf.summary.image('w_reads',
-    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-    #            [FLAGS.batch_size,
-    #                FLAGS.mem_size*FLAGS.read_head_size, total_length+1, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #tf.summary.image('w_writes',
-    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-    #            [FLAGS.batch_size,
-    #                FLAGS.mem_size*FLAGS.write_head_size, total_length+1, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #"""w_gated"""
-    #ws = tf.stack([x['w_gated'] for x in debugs], axis=-1)
-    #tf.summary.image('w_gated_reads',
-    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-    #            [FLAGS.batch_size, -1, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #tf.summary.image('w_gated_writes',
-    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-    #            [FLAGS.batch_size, -1, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #"""w_conv"""
-    #ws = tf.stack([x['w_conv'] for x in debugs], axis=-1)
-    #tf.summary.image('w_conv_reads',
-    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-    #            [FLAGS.batch_size, -1, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #tf.summary.image('w_conv_writes',
-    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-    #            [FLAGS.batch_size, -1, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #"""w_conv_powed"""
-    #ws = tf.stack([x['w_conv_powed'] for x in debugs], axis=-1)
-    #tf.summary.image('w_conv_powed_reads',
-    #        tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-    #            [FLAGS.batch_size, -1, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
-    #tf.summary.image('w_conv_powed_writes',
-    #        tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-    #            [FLAGS.batch_size, -1, total_length, 1]),
-    #        max_outputs=FLAGS.batch_size)
+    tf.summary.image('M', tf.reshape(Ms,
+        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*total_length, 1]),
+        max_outputs=FLAGS.batch_size)
+    """w"""
+    tf.summary.image('w_reads',
+            tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+                [FLAGS.batch_size,
+                    FLAGS.mem_size*FLAGS.read_head_size, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    tf.summary.image('w_writes',
+            tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+                [FLAGS.batch_size,
+                    FLAGS.mem_size*FLAGS.write_head_size, total_length, 1]),
+            max_outputs=FLAGS.batch_size)
+    """reads"""
+    tf.summary.image('reads',
+            tf.reshape(reads, [FLAGS.batch_size*FLAGS.read_head_size,
+                FLAGS.mem_dim, total_length, 1]),
+            max_outputs=FLAGS.batch_size*FLAGS.read_head_size)
+
     output_sigmoid = tf.sigmoid(tf.transpose(output_logits, perm=[0,2,1]))
     tf.summary.image('output_sigmoid', tf.reshape(output_sigmoid, [FLAGS.batch_size,
         width+1, total_length, 1]), max_outputs=FLAGS.batch_size)

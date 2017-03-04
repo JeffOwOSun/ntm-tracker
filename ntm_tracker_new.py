@@ -18,6 +18,10 @@ class LoopNTMTracker(object):
 
             outputs = tf.TensorArray(tf.float32, self.sequence_length)
             output_logits = tf.TensorArray(tf.float32, self.sequence_length)
+            Ms = tf.TensorArray(tf.float32, self.sequence_length)
+            ws = tf.TensorArray(tf.float32, self.sequence_length)
+            reads = tf.TensorArray(tf.float32, self.sequence_length)
+
             time = tf.constant(0, dtype=tf.int32)
             M = state['M']
             w = state['w']
@@ -28,24 +32,32 @@ class LoopNTMTracker(object):
                     cond = lambda time, *_: time < self.sequence_length,
                     body = self._loop_body,
                     loop_vars = (time, outputs, output_logits, inputs, M, w,
-                        read, controller_state),
+                        read, controller_state, Ms, ws, reads),
                     parallel_iterations = 32,
                     swap_memory = True)
 
             return (stack_into_tensor(final_result[1], 1, name="outputs"),
-                    stack_into_tensor(final_result[2], 1, name="output_logits"))
+                    stack_into_tensor(final_result[2], 1,
+                        name="output_logits"),
+                    #M
+                    stack_into_tensor(final_result[-3], 3, name="Ms"),
+                    stack_into_tensor(final_result[-2], 3, name="ws"),
+                    stack_into_tensor(final_result[-1], 3, name="reads"))
 
     def _loop_body(self, time, outputs, output_logits, inputs, M, w,
-                        read, controller_state):
+                        read, controller_state, Ms, ws, reads):
         step_input = inputs.read(time)
         ntm_output, ntm_output_logit, _, _, M, w, read, controller_state = self.cell(
                 step_input, None, M_prev=M, w_prev=w, read_prev=read,
                 controller_state=controller_state)
         outputs = outputs.write(time, ntm_output)
         output_logits = output_logits.write(time, ntm_output_logit)
+        Ms.write(time, M)
+        ws.write(time, w)
+        reads.write(time, read)
 
         return (time+1, outputs, output_logits, inputs, M, w, read,
-                controller_state)
+                controller_state, Ms, ws, reads)
 
 class PlainNTMTracker(object):
     """
