@@ -14,13 +14,16 @@ class LoopNTMTracker(object):
         with tf.variable_scope(scope or 'ntm-tracker', initializer=self.initializer):
             state = state or self.cell.zero_state(inputs.get_shape().as_list()[0],
                     self.initializer)
-            inputs = unstack_into_tensorarray(inputs, 1)
+            inputs = unstack_into_tensorarray(inputs, 1, name="inputs")
 
-            outputs = tf.TensorArray(tf.float32, self.sequence_length)
-            output_logits = tf.TensorArray(tf.float32, self.sequence_length)
-            Ms = tf.TensorArray(tf.float32, self.sequence_length)
-            ws = tf.TensorArray(tf.float32, self.sequence_length)
-            reads = tf.TensorArray(tf.float32, self.sequence_length)
+            outputs = tf.TensorArray(tf.float32,
+                    self.sequence_length, name="outputs")
+            output_logits = tf.TensorArray(tf.float32,
+                    self.sequence_length, name="output_logits")
+            Ms = tf.TensorArray(tf.float32, self.sequence_length, name="Ms")
+            ws = tf.TensorArray(tf.float32, self.sequence_length, name="ws")
+            reads = tf.TensorArray(tf.float32,
+                    self.sequence_length, name="reads")
 
             time = tf.constant(0, dtype=tf.int32)
             M = state['M']
@@ -52,9 +55,9 @@ class LoopNTMTracker(object):
                 controller_state=controller_state)
         outputs = outputs.write(time, ntm_output)
         output_logits = output_logits.write(time, ntm_output_logit)
-        Ms.write(time, M)
-        ws.write(time, w)
-        reads.write(time, read)
+        Ms = Ms.write(time, M)
+        ws = ws.write(time, w)
+        reads = reads.write(time, read)
 
         return (time+1, outputs, output_logits, inputs, M, w, read,
                 controller_state, Ms, ws, reads)
@@ -146,7 +149,7 @@ class NTMTracker(object):
                     if idx == 0:
                         #[batch_size, 1]
                         ntm_output, ntm_output_logit, state, debug = self.cell(
-                                tf.concat_v2([zero_switch, inputs[:,idx,:],
+                                tf.concat([zero_switch, inputs[:,idx,:],
                                     target], 1),
                                 state)
                         self.states.append(state)
@@ -158,7 +161,7 @@ class NTMTracker(object):
                         1. step 1, present the input
                         """
                         ntm_output, ntm_output_logit, state, debug = self.cell(
-                                tf.concat_v2([zero_switch, inputs[:,idx,:],
+                                tf.concat([zero_switch, inputs[:,idx,:],
                                     dummy_target], 1),
                                 state)
                         self.states.append(state)
@@ -169,7 +172,7 @@ class NTMTracker(object):
                         1. step 2, ask for output
                         """
                         ntm_output, ntm_output_logit, state, debug = self.cell(
-                                tf.concat_v2([one_switch, dummy_input,
+                                tf.concat([one_switch, dummy_input,
                                     dummy_target], 1),
                                 state)
                         self.states.append(state)
@@ -178,7 +181,7 @@ class NTMTracker(object):
                         self.output_logits.append(ntm_output_logit)
                 else:
                     ntm_output, ntm_output_logit, state, debug = self.cell(
-                            tf.concat_v2([inputs[:,idx,:], indicator], 1), state)
+                            tf.concat([inputs[:,idx,:], indicator], 1), state)
 
                     self.states.append(state)
                     self.debugs.append(debug)

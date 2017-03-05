@@ -101,7 +101,7 @@ class NTMCell(object):
             read_prev = tf.reshape(read_prev,
                     [-1, self.read_head_size*self.mem_dim])
             controller_output, controller_state = self.controller(
-                    tf.concat_v2([inputs, read_prev], 1),
+                    tf.concat([inputs, read_prev], 1),
                     controller_state, scope="lstm-controller")
 
             # build a memory
@@ -355,7 +355,7 @@ def _linear(args, output_size, bias, bias_start=0.0, scope=None):
     if len(args) == 1:
       res = math_ops.matmul(args[0], weights)
     else:
-      res = math_ops.matmul(array_ops.concat_v2(args, 1), weights)
+      res = math_ops.matmul(array_ops.concat(args, 1), weights)
     if not bias:
       return res
     with vs.variable_scope(outer_scope) as inner_scope:

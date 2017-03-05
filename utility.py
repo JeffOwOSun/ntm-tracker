@@ -58,7 +58,7 @@ def decaying_softmax(shape, axis):
 
     return container + np.reshape(weights_vector, broadcastable_shape)
 
-def unstack_into_tensorarray(value, axis, size=None):
+def unstack_into_tensorarray(value, axis, size=None, name=None):
     """
     unpacks a given tensor along a given axis into a TensorArray
 
@@ -84,9 +84,9 @@ def unstack_into_tensorarray(value, axis, size=None):
         raise ValueError("Can't create TensorArray with size None")
 
     array = tf.TensorArray(dtype=dtype, size=array_size)
-    dim_permutation = [axis] + range(1, axis) + [0] + range(axis + 1, rank)
+    dim_permutation = [axis] + range(0, axis) + range(axis + 1, rank)
     unpack_axis_major_value = tf.transpose(value, dim_permutation)
-    full_array = array.unstack(unpack_axis_major_value)
+    full_array = array.unstack(unpack_axis_major_value, name=name)
 
     return full_array
 
@@ -106,10 +106,12 @@ def stack_into_tensor(array, axis, name=None):
     """
 
     packed_tensor = array.stack()
+    """packed_tensor will have the new dim at axis 0"""
+    print(name, packed_tensor.get_shape().as_list())
     shape = packed_tensor.get_shape()
     rank = len(shape)
 
-    dim_permutation = [axis] + range(1, axis) + [0]  + range(axis + 1, rank)
+    dim_permutation = range(1, axis+1) + [0]  + range(axis + 1, rank)
     correct_shape_tensor = tf.transpose(packed_tensor, dim_permutation,
             name=name)
 

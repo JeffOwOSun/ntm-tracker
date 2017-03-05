@@ -61,7 +61,7 @@ def linear(args, output_size, bias, bias_start=0.0, scope=None):
         if len(args) == 1:
             res = math_ops.matmul(args[0], matrix)
         else:
-            res = math_ops.matmul(array_ops.concat_v2(args, 1), matrix)
+            res = math_ops.matmul(array_ops.concat(args, 1), matrix)
         if not bias:
             return res
         bias_term = vs.get_variable(
@@ -239,7 +239,7 @@ def circular_shift(tensor, shift):
     size = [-1]*len(shape)
     size[-1] = splitting_point
     right_slice = tf.slice(tensor, start, size)
-    return tf.concat_v2([left_slice, right_slice], axis=len(shape)-1)
+    return tf.concat([left_slice, right_slice], axis=len(shape)-1)
 
 def circular_convolution(v, k):
     """Computes circular convolution.
