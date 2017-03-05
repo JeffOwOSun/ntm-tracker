@@ -34,7 +34,7 @@ flags.DEFINE_integer("num_epochs", 1, "number of epochs to train")
 flags.DEFINE_string("vgg_model_frozen", "./vgg_16_frozen.pb", "The pb file of the frozen vgg_16 network")
 flags.DEFINE_boolean("test_read_imgs", False, "test read imgs module")
 flags.DEFINE_boolean("lstm_only", False, "use build-in lstm only")
-flags.DEFINE_string("log_dir", "/tmp/ntm-tracker", "The log dir")
+flags.DEFINE_string("log_dir", "./log", "The log dir")
 flags.DEFINE_integer("sequence_length", 20, "The length of input sequences")
 flags.DEFINE_integer("model_length", 20, "The length of total steps of the tracker. Determines the physical length of the architecture in the graph. Affects the depth of back propagation in time. Longer input will be truncated")
 flags.DEFINE_integer("batch_size", 16, "size of batch")
@@ -69,7 +69,9 @@ FLAGS = flags.FLAGS
 
 random.seed(42)
 
-real_log_dir = os.path.join(FLAGS.log_dir, str(datetime.now())+FLAGS.tag)
+real_log_dir = os.path.abspath(os.path.join(FLAGS.log_dir,
+    str(datetime.now())+FLAGS.tag))
+print('real log dir: {}'.format(real_log_dir))
 
 VGG_MEAN = tf.constant([123.68, 116.78, 103.94], dtype=tf.float32,
         shape=[1,1,3], name="VGG_MEAN")
@@ -154,7 +156,6 @@ def train_and_val_sequential(
         train_op, loss_op, enqueue_op, q_close_op,
         #input placeholders
         file_names_placeholder, target_ph, gt_ph,
-        output_sigmoids,
         train_merged_summary,
         val_merged_summary,
         global_step,
@@ -704,8 +705,6 @@ def ntm_sequential():
     num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
     """
     total_steps = num_features + (FLAGS.sequence_length - 1) * (2 * num_features + 1)
-    pad_steps = 0
-    #pad_steps = FLAGS.model_length - (total_steps % FLAGS.model_length) if total_steps % FLAGS.model_length else 0
     print("constructing inputs...")
     #shape [batch, seq_len, num_features, 130]
     inputs_padded = tf.concat([inputs, tf.zeros([FLAGS.batch_size,
@@ -765,10 +764,6 @@ def ntm_sequential():
     inputs = tf.concat([
         inputs,
         tf.expand_dims(target, -1)], -1)
-    if pad_steps:
-        inputs_pad_steps = tf.zeros([FLAGS.batch_size, pad_steps,
-            inputs.get_shape().as_list()[-1]])
-        inputs = tf.concat([ inputs, inputs_pad_steps], 1)
     print("constructing ground truths...")
     """
     ground truth
@@ -801,6 +796,7 @@ def ntm_sequential():
     stack at last axis, so that every feature scalar is prepended by a zero
     scalar
     """
+    gt = gt_ph[:,1:,:]
     reshape_gt_ph = tf.reshape(gt_ph[:,1:,:],
         [FLAGS.batch_size*(FLAGS.sequence_length-1),features_dim[1],features_dim[2],1])
     train_summaries.append(tf.summary.image("train_ground_truth",
@@ -829,10 +825,6 @@ def ntm_sequential():
     #tf.summary.image("labels", tf.reshape(labels,
     #    [1,FLAGS.batch_size,num_features+(FLAGS.sequence_length-1)*(2*num_features+1),1]),
     #    max_outputs=1)
-    """pad the labels"""
-    if pad_steps:
-        labels_pad_steps = tf.zeros([FLAGS.batch_size, pad_steps])
-        labels = tf.concat([labels, labels_pad_steps], 1)
     labels = tf.expand_dims(labels, -1)
 
     print("constructing tracker...")
@@ -852,7 +844,6 @@ def ntm_sequential():
     print(inputs.get_shape().as_list())
     outputs, output_logits, Ms, ws, reads = tracker(inputs)
     print(output_logits.get_shape().as_list())
-    output_sigmoids = tf.sigmoid(output_logits)
     """
     add summaries
     """
@@ -888,18 +879,26 @@ def ntm_sequential():
     """
     now the subgraph to convert model output sequence to perceivable heatmaps
     """
-    output_gather = tf.squeeze(output_sigmoids, axis=2)
-    """remove the padding at end"""
-    output_gather = output_gather[:,:total_steps]
+    output_gather = tf.squeeze(output_logits, axis=2)
     """remove the output for first frame"""
     output_gather = output_gather[:,num_features:]
+    output_first_frame = output_gather[:, :num_features]
     """remove the output for sequence delimiter"""
     output_gather = tf.reshape(output_gather, [FLAGS.batch_size,
-        FLAGS.sequence_length-1, 2*num_features+1])[:,:,1:]
+        FLAGS.sequence_length-1, 2*num_features+1])
+    output_sequence_delimiter = output_gather[:,:,:1]
+    output_gather = output_gather[:,:,1:]
     """remove the output of first step in 2-step presentation"""
     output_gather = tf.reshape(output_gather, [FLAGS.batch_size,
-        FLAGS.sequence_length-1, num_features, 2])[:,:,:,1]
-    reshape_output_gather = tf.reshape(output_gather,
+        FLAGS.sequence_length-1, num_features, 2])
+    output_first_step = output_gather[:,:,:,0]
+    output_gather = output_gather[:,:,:,1]
+    other_outputs = tf.concat([
+        tf.reshape(output_first_frame, [-1]),
+        tf.reshape(output_sequence_delimiter, [-1]),
+        tf.reshape(output_first_step, [-1])])
+    output_sigmoids = tf.sigmoid(output_gather)
+    reshape_output_gather = tf.reshape(output_sigmoids,
                 [FLAGS.batch_size*(FLAGS.sequence_length-1),
                     features_dim[1],features_dim[2],1])
     train_summaries.append(tf.summary.image("train_gathered_outputs",
@@ -912,14 +911,17 @@ def ntm_sequential():
     #output_logits is in [batch, seq_length, output_dim]
     #reshape it to [batch*seq_length, output_dim]
     #"""loss"""
-    #loss_op = tf.reduce_sum(
-    #    tf.nn.softmax_cross_entropy_with_logits(
-    #        logits=tf.reshape(output_logits, [-1, num_features+1]),
-    #        labels=tf.nn.softmax(tf.reshape(labels, [-1, num_features+1]))
-    #        )) / ((2*FLAGS.sequence_length-1) * FLAGS.batch_size)
+    loss_op = tf.reduce_sum(
+        tf.nn.softmax_cross_entropy_with_logits(
+            logits=tf.reshape(output_gather, [-1, num_features]),
+            labels=tf.reshape(gt, [-1, num_features])
+            )) / (FLAGS.sequence_length-1)\
+        #+ tf.losses.log_loss(tf.zeros_like(other_outputs), tf.sigmoid(other_outputs))
     print("constructing loss...")
     """log loss"""
-    loss_op = tf.losses.log_loss(labels, output_sigmoids)
+    #loss_op = tf.losses.log_loss(, tf.reshape(output_sigmoids, [
+    #    FLAGS.batch_size*(FLAGS.sequence_length-1), num_features
+    #    ]))
     train_summaries.append(tf.summary.scalar('train_loss', loss_op))
     val_summaries.append(tf.summary.scalar('val_loss', loss_op))
     """training op"""
@@ -941,7 +943,6 @@ def ntm_sequential():
             #input placeholders
             file_names_placeholder, target_ph, gt_ph,
             #terminal tensors,
-            output_sigmoids,
             #summaries
             train_merged_summary,
             val_merged_summary,
