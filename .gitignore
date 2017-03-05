@@ -11,3 +11,5 @@ checkpoint
 matcher_test
 *.pkl.*
 visualize.sh
+*.txt
+log
