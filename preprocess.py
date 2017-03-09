@@ -16,6 +16,11 @@ flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
 flags.DEFINE_integer("cropbox_grid", 7, "side length of grid, on which the ground truth will be generated")
 flags.DEFINE_integer("bbox_grid", 3, "side length of bbox grid")
 FLAGS = flags.FLAGS
+flags.DEFINE_float("deform_threshold", 0.1, "criterion to stop the producing of bbox")
+flags.DEFINE_float("zoom_threshold", 0.1, "criterion to stop the producing of bbox upon zoom in/out of object")
+
+def join_lists(list_of_lists):
+    return [x for sublist in list_of_lists for x in sublist]
 
 class TFCropper(object):
     def __init__(self, crop_size=[224,224]):
@@ -135,14 +140,37 @@ def calculate_transformation_test():
     np.testing.assert_almost_equal(transformed_bbox, [0,0,1,1])
     print("SUCCESS:", transformed_bbox)
 
-def bbox_legal(normalbbox, cropbox):
+def bbox_legal(normalbbox, cropbox, cropbox_grid=FLAGS.cropbox_grid,
+        bbox_grid=FLAGS.bbox_grid,
+        deform_threshold=FLAGS.deform_threshold,
+        zoom_threshold=FLAGS.zoom_threshold):
     """
-    make sure normalbbox is within cropbox
+    make sure normalbbox is within cropbox, and is not too different from
+    initial scale and aspect ratio
     """
-    return normalbbox[0] >= cropbox[0] and\
+    within_bound = normalbbox[0] >= cropbox[0] and\
            normalbbox[1] >= cropbox[1] and\
            normalbbox[2] <= cropbox[2] and\
            normalbbox[3] <= cropbox[3]
+
+    y1,x1,y2,x2 = normalbbox
+    w, h = x2-x1, y2-y1
+    y1,x1,y2,x2 = cropbox
+    cw, ch = x2-x1, y2-y1
+
+    whr, hwr = w/h/(cw/ch), h/w/(ch/cw)
+    deformed = hwr > 1+deform_threshold or whr > 1+deform_threshold
+
+
+    y1,x1,y2,x2 = cropbox
+    cw, ch = x2-x1, y2-y1
+    ratio = bbox_grid/float(cropbox_grid)
+    ub, lb = ratio*(1+zoom_threshold), ratio*(1-zoom_threshold)
+    zoomed = w/cw > ub or w/cw < lb or h/ch > ub or h/ch < lb
+
+    #print("inbound {}, deformed {}, zoomed {}".format(within_bound, deformed, zoomed))
+    return within_bound and (not deformed) and (not zoomed)
+
 
 def matlab_style_gauss2D(shape=(3,3),sigma=0.5):
     """
@@ -210,7 +238,7 @@ def process_sequence(root):
     cropper = TFCropper()
 
     for idx, framefile in enumerate(framefiles):
-        print('processing {}'.format(framefile))
+        #print('processing {}'.format(framefile))
         anno_full_path = os.path.join(root, framefile)
         parsed_frame = parse_frame(anno_full_path)
         size = parsed_frame['size']
@@ -280,6 +308,8 @@ def process_sequence(root):
                     d.rectangle([x1*224,y1*224,x2*224,y2*224], outline="red")
                     cropped.save(os.path.join(output_dir,
                         parsed_frame['filename']+'_crop.png'))
+    print('generated {} frames'.format(len(join_lists(records.values()))))
+
 
 
 def main():
@@ -313,9 +343,9 @@ def main():
         if len(files) > 0:
             sequences.append(root)
     print('found {} sequences'.format(len(sequences)))
-    #pool = Pool()
-    #pool.map(process_sequence, sequences, 1000)
-    map(process_sequence, sequences)
+    pool = Pool(7)
+    pool.map(process_sequence, sequences, 1000)
+    #map(process_sequence, sequences)
 
 
 if __name__ == '__main__':
