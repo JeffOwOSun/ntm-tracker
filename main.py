@@ -5,6 +5,7 @@ import numpy as np
 import pickle
 from datetime import datetime
 import os
+import scipy.misc
 
 from vgg import vgg_16
 
@@ -64,6 +65,9 @@ flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels afte
 flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
 flags.DEFINE_integer("mem_size", 128, "size of mem")
 flags.DEFINE_integer("mem_dim", 20, "dim of mem")
+flags.DEFINE_boolean("test_input", False, "test the new get_input function")
+flags.DEFINE_integer("gt_width", 7, "width of ground truth. a value of 7 means a 7x7 ground truth")
+flags.DEFINE_integer("gt_depth", 8, "number of bytes used for each pixel")
 
 FLAGS = flags.FLAGS
 
@@ -102,6 +106,84 @@ def default_get_batch(index, batch_size, seq_length, seqs):
         real_gts.append(np.array([np.reshape(x[-1][0], (-1)) for x in seq]))
     real_gts = np.array(real_gts)
     return frame_names, real_gts, index
+
+def get_input(batch_size):
+    """
+    read three things
+    1. original image
+    2. cropbox
+    3. ground truth
+    """
+    """
+    this is the filename without suffix
+    """
+    filename_nosuffix_ph = tf.placeholder(shape=(batch_size), dtype=tf.string)
+    bin_suffix = tf.fill([batch_size], '.bin')
+    txt_suffix = tf.fill([batch_size], '.txt')
+    bins = tf.string_join([filename_nosuffix_ph, bin_suffix])
+    txts = tf.string_join([filename_nosuffix_ph, txt_suffix])
+    """process the txts"""
+    txt_rdr = tf.TextLineReader()
+    txt_q = tf.FIFOQueue(batch_size, tf.string)
+    txt_enq_op = txt_q.enqueue_many(txts)
+    txt_cls_op = txt_q.close()
+    key, value = txt_rdr.read(txt_q)
+    record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],['']]
+    y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
+    cropbox = tf.stack([y1,x1,y2,x2])
+    cropboxes, img_filenames = tf.train.batch([cropbox, img_filename],
+            batch_size = batch_size, num_threads=1)
+    """process the imgs"""
+    img_q = tf.FIFOQueue(batch_size, tf.string)
+    img_enq_op = img_q.enqueue_many(img_filenames)
+    img_cls_op = img_q.close()
+    wf_rdr = tf.WholeFileReader()
+    key, value = wf_rdr.read(img_q)
+    my_img = tf.image.decode_jpeg(value)
+    my_img = tf.reshape(tf.image.resize_images(my_img, [720, 1280]), (720, 1280, 3))
+    my_img = my_img - VGG_MEAN
+    batch_img = tf.train.batch([my_img],
+            batch_size = batch_size,
+            num_threads = 1)
+    batch_img = tf.image.crop_and_resize(batch_img, cropboxes,
+            tf.range(batch_size), [224, 224])
+    with tf.control_dependencies([txt_enq_op, img_enq_op]):
+        batch_img = tf.identity(batch_img)
+    """process the ground truths"""
+    bin_q = tf.FIFOQueue(batch_size, tf.string)
+    bin_enq_op = bin_q.enqueue_many(bins)
+    bin_cls_op = bin_q.close()
+    record_bytes = FLAGS.gt_width*FLAGS.gt_width*FLAGS.gt_depth
+    fl_rdr = tf.FixedLengthRecordReader(record_bytes=record_bytes)
+    key, value = fl_rdr.read(bin_q)
+    gt = tf.reshape(tf.cast(tf.decode_raw(value, tf.float64), tf.float32),
+            [FLAGS.gt_width, FLAGS.gt_width])
+    batch_gt = tf.train.batch([gt],
+            batch_size = batch_size,
+            num_threads = 1)
+    with tf.control_dependencies([bin_enq_op]):
+        batch_gt = tf.identity(batch_gt)
+    close_qs_op = tf.group(txt_cls_op, img_cls_op, bin_cls_op)
+
+    return filename_nosuffix_ph, batch_img, batch_gt, close_qs_op
+
+
+def test_get_input(batch_size=1):
+    filename_ph, batch_img, batch_gt, close_op = get_input(batch_size)
+    with tf.Session() as sess:
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(coord=coord)
+        imgs, gts = sess.run([batch_img, batch_gt], feed_dict={
+            filename_ph:
+            ['/home/jowos/data/ILSVRC2015/cropped/a/ILSVRC2015_train_00000000_0/000000']*batch_size
+            })
+        for idx in xrange(batch_size):
+            scipy.misc.imsave('test_get_input_{}.png'.format(idx), imgs[idx])
+            print(gts[idx])
+        sess.run(close_op)
+        coord.request_stop()
+        coord.join(threads)
+
 
 def read_imgs(batch_size):
     # a fifo queue with 100 capacity
@@ -1333,6 +1415,8 @@ if __name__ == '__main__':
         f.write('tensorboard --logdir="{}"'.format(real_log_dir))
     if (FLAGS.test_read_imgs):
         test_read_imgs()
+    elif FLAGS.test_input:
+        test_get_input()
     elif (FLAGS.lstm_only):
         lstm_only()
     elif (FLAGS.sanity_check):
