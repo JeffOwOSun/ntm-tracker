@@ -13,3 +13,4 @@ matcher_test
 visualize.sh
 *.txt
 log
+*.bak
