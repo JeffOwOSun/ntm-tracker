@@ -6,6 +6,10 @@ import pickle
 from datetime import datetime
 import os
 import scipy.misc
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 
 from vgg import vgg_16
 
@@ -82,6 +86,25 @@ print('real log dir: {}'.format(real_log_dir))
 
 VGG_MEAN = tf.constant([123.68, 116.78, 103.94], dtype=tf.float32,
         shape=[1,1,3], name="VGG_MEAN")
+
+def save_imgs(imgs, filename, savedir=real_log_dir):
+    """
+    Args:
+        imgs: a list of ndarrays, each has shape [batch, length, w, h, c]
+    """
+    batch, length, _, _, _ = imgs[0].shape
+    #print([x.shape for x in imgs])
+    rows = len(imgs)*batch
+    columns = length
+    fig, axs = plt.subplots(rows, columns, figsize=(columns, rows), dpi=160)
+    for batch_idx in xrange(batch):
+        for set_idx, img in enumerate(imgs):
+            for length_idx in xrange(length):
+                ax = axs[batch_idx*len(imgs)+set_idx, length_idx]
+                ax.imshow(np.squeeze(img[batch_idx, length_idx,:,:,:]))
+                ax.axis('off')
+    fig.savefig(os.path.join(savedir, filename+'.png'),
+            bbox_inches='tight', pad_inches=0)
 
 def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
         min_length=FLAGS.sequence_length):
@@ -275,6 +298,8 @@ def train_and_val_sevenbyseven(#ops
         train_merged_summary,
         val_merged_summary,
         val_loss_summary,
+        #tensors to plot to files
+        saves,
         #global step variable
         global_step,
         get_batch):
@@ -329,10 +354,12 @@ def train_and_val_sevenbyseven(#ops
                 """
                 run: compute the output and train the model
                 """
-                loss, summary, _ = sess.run(
-                        [loss_op, train_merged_summary, train_op],
+                loss, summary, _, real_saves, gstep = sess.run(
+                        [loss_op, train_merged_summary, train_op, saves,
+                            global_step],
                         feed_dict=feed_dict
                         )
+                save_imgs(real_saves, 'step_{}_train'.format(gstep), real_log_dir)
                 writer.add_summary(summary, step)
                 if step % FLAGS.log_interval == 0:
                     print("{} training loss: {}".format(step, loss))
@@ -347,13 +374,16 @@ def train_and_val_sevenbyseven(#ops
                     frame_names, index = get_batch(index, FLAGS.batch_size, test_seqs)
                     feed_dict = {file_names_placeholder:
                                 frame_names}
-                    loss, summary = sess.run(
-                            [loss_op, val_merged_summary],
+                    loss, summary, real_saves = sess.run(
+                            [loss_op, val_merged_summary, saves],
                             feed_dict=feed_dict
                             )
                     accumu_loss += loss
                     count += 1
                     writer.add_summary(summary, step)
+                    save_imgs(real_saves,
+                            'step_{}_validation_{}'.format(gstep,
+                                int(count)), real_log_dir)
                 accumu_loss /= count
                 summary = sess.run(val_loss_summary,
                         feed_dict={val_loss_ph: accumu_loss})
@@ -1820,6 +1850,16 @@ def ntm_sevenbyseven():
     train_merged_summary = tf.summary.merge(train_summaries)
     val_merged_summary = tf.summary.merge(val_summaries)
 
+    """save training output images"""
+    input_save = tf.cast(tf.reshape(batch_img+tf.expand_dims(VGG_MEAN,0),
+        [FLAGS.batch_size, FLAGS.sequence_length, 224, 224, 3]), tf.uint8)
+    gt_save = tf.reshape(batch_gt, [FLAGS.batch_size, FLAGS.sequence_length,
+        FLAGS.gt_width, FLAGS.gt_width, 1])
+    output_save = tf.reshape(output_gather, [FLAGS.batch_size,
+        FLAGS.sequence_length-1, FLAGS.gt_width, FLAGS.gt_width, 1])
+    output_save = tf.concat([tf.zeros_like(output_save[:,:1,:,:,:]),
+        output_save], 1)
+
     return (#ops
             train_op, loss_op, q_close_op,
             #input placeholders
@@ -1828,6 +1868,8 @@ def ntm_sevenbyseven():
             train_merged_summary,
             val_merged_summary,
             val_loss_summary,
+            #tensor to plot to files,
+            [input_save, gt_save, output_save],
             #global step variable
             global_step,
             sevenbyseven_get_batch)
