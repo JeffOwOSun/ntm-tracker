@@ -76,6 +76,7 @@ flags.DEFINE_integer("gt_depth", 8, "number of bytes used for each pixel")
 flags.DEFINE_string("sequences_dir", "", "dir to look for sequences")
 flags.DEFINE_integer("validation_interval", 100, "number of steps before validation")
 flags.DEFINE_integer("validation_batch", 1, "validate only this number of batches")
+flags.DEFINE_boolean("skip_frame", True, "turn on skip frame to enrich input")
 
 FLAGS = flags.FLAGS
 
@@ -109,24 +110,29 @@ def save_imgs(imgs, filename, savedir=real_log_dir):
     plt.close(fig)
 
 def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
-        min_length=FLAGS.sequence_length):
+        min_length=FLAGS.sequence_length, skip_frame=False):
     """dirs of sequences"""
     sequences = [os.path.join(sequences_dir,x) for x in
             sorted(os.listdir(sequences_dir))]
     result = []
     train = []
     val = []
-    for seq in sequences:
+    for seqdir in sequences:
         """the statistics files"""
-        files = sorted([x[:-4] for x in os.listdir(seq) if
+        files = sorted([x[:-4] for x in os.listdir(seqdir) if
             x.endswith('.txt')])
-        """only retain the files that are long enough"""
-        if len(files) >= min_length:
-            result.append((seq, files[:min_length]))
-            if 'train' in seq:
-                train.append((seq, files[:min_length]))
-            elif 'val' in seq:
-                val.append((seq, files[:min_length]))
+        """
+        Only retain the files that are long enough.
+        For long sequences, dilate the steps taken to enrich the input
+        """
+        max_skip_len = min(len(files) / min_length, 5) if skip_frame else 1
+        for skip in xrange(1,max_skip_len+1):
+            sliced = files[::skip][:min_length]
+            result.append((seqdir, sliced))
+            if 'train' in seqdir:
+                train.append((seqdir, sliced))
+            elif 'val' in seqdir:
+                val.append((seqdir, sliced))
             else:
                 raise Exception('expect either train or val in sequence name')
     return result, train, val
@@ -334,7 +340,7 @@ def train_and_val_sevenbyseven(#ops
         """
         #TODO: replace this
         print("getting valid sequences...")
-        _, train_seqs, val_seqs = get_valid_sequences()
+        _, train_seqs, val_seqs = get_valid_sequences(skip_frame=FLAGS.skip_frame)
         print('{} sequences after length filtering'.format(
             len(train_seqs)+len(val_seqs)))
         #shuffle the order
