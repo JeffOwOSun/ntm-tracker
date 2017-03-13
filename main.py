@@ -74,7 +74,8 @@ flags.DEFINE_boolean("test_input", False, "test the new get_input function")
 flags.DEFINE_integer("gt_width", 7, "width of ground truth. a value of 7 means a 7x7 ground truth")
 flags.DEFINE_integer("gt_depth", 8, "number of bytes used for each pixel")
 flags.DEFINE_string("sequences_dir", "", "dir to look for sequences")
-flags.DEFINE_integer("validation_interval", 1, "number of epochs before validation")
+flags.DEFINE_integer("validation_interval", 100, "number of steps before validation")
+flags.DEFINE_integer("validation_batch", 1, "validate only this number of batches")
 
 FLAGS = flags.FLAGS
 
@@ -105,6 +106,7 @@ def save_imgs(imgs, filename, savedir=real_log_dir):
                 ax.axis('off')
     fig.savefig(os.path.join(savedir, filename+'.png'),
             bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
 
 def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
         min_length=FLAGS.sequence_length):
@@ -112,6 +114,8 @@ def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
     sequences = [os.path.join(sequences_dir,x) for x in
             sorted(os.listdir(sequences_dir))]
     result = []
+    train = []
+    val = []
     for seq in sequences:
         """the statistics files"""
         files = sorted([x[:-4] for x in os.listdir(seq) if
@@ -119,7 +123,13 @@ def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
         """only retain the files that are long enough"""
         if len(files) >= min_length:
             result.append((seq, files[:min_length]))
-    return result
+            if 'train' in seq:
+                train.append((seq, files[:min_length]))
+            elif 'val' in seq:
+                val.append((seq, files[:min_length]))
+            else:
+                raise Exception('expect either train or val in sequence name')
+    return result, train, val
 
 def create_vgg(inputs, feature_layer):
     net, end_points = vgg_16(inputs)
@@ -324,18 +334,17 @@ def train_and_val_sevenbyseven(#ops
         """
         #TODO: replace this
         print("getting valid sequences...")
-        generated_sequences = get_valid_sequences()
-        print('{} sequences after length filtering'.format(len(generated_sequences)))
+        _, train_seqs, val_seqs = get_valid_sequences()
+        print('{} sequences after length filtering'.format(
+            len(train_seqs)+len(val_seqs)))
         #shuffle the order
-        print("shuffling the sequences...")
-        random.shuffle(generated_sequences)
         #divide train/test batches
-        num_train = (len(generated_sequences)/10*9)/FLAGS.batch_size*FLAGS.batch_size
-        num_test = (len(generated_sequences)/10)/FLAGS.batch_size*FLAGS.batch_size
-        test_seqs = generated_sequences[:num_test]
-        train_seqs = generated_sequences[-num_train:]
-        print('{} train seqs, {} test seqs'.format(
-            len(train_seqs), len(test_seqs)))
+        num_train = len(train_seqs)/FLAGS.batch_size*FLAGS.batch_size
+        num_val = len(val_seqs)/FLAGS.batch_size*FLAGS.batch_size
+        train_seqs = train_seqs[:num_train]
+        val_seqs = val_seqs[:num_val]
+        print('{} train seqs, {} val seqs'.format(
+            len(train_seqs), len(val_seqs)))
         step = 0 #this is not global step, and is only relevant to logging
         num_epochs = FLAGS.num_epochs
         for epoch in xrange(num_epochs):
@@ -345,6 +354,41 @@ def train_and_val_sevenbyseven(#ops
             #train
             index = 0 #index used by get_batch
             while index < len(train_seqs):
+                """validate first"""
+                if step % FLAGS.validation_interval == 0:
+                    print("{} validating...".format(step))
+                    random.shuffle(val_seqs)
+                    val_index = 0
+                    accumu_loss = .0
+                    count = 0
+                    while val_index < len(val_seqs):
+                        #get a batch
+                        frame_names, index = get_batch(val_index, FLAGS.batch_size, val_seqs)
+                        feed_dict = {file_names_placeholder:
+                                    frame_names}
+                        loss, summary, real_saves, gstep = sess.run(
+                                [loss_op, val_merged_summary, saves,
+                                    global_step],
+                                feed_dict=feed_dict
+                                )
+                        accumu_loss += loss
+                        writer.add_summary(summary, step)
+                        save_imgs(real_saves,
+                                'step_{}_validation_{}'.format(gstep,
+                                    int(count)), real_log_dir)
+                        count += 1
+                        if count >= FLAGS.validation_batch:
+                            break
+                    accumu_loss /= float(count)
+                    summary = sess.run(val_loss_summary,
+                            feed_dict={val_loss_ph: accumu_loss})
+                    writer.add_summary(summary, step)
+                    print("{}: validation loss {}".format(step, accumu_loss))
+                    save_path = saver.save(sess, os.path.join(real_log_dir,
+                    "model.ckpt"), global_step=global_step)
+                    print("model saved to {}".format(save_path))
+                    with open("save_path.txt", "w") as f:
+                        f.write(save_path)
                 # this batch
                 frame_names, index = get_batch(index,
                         FLAGS.batch_size, train_seqs)
@@ -363,37 +407,42 @@ def train_and_val_sevenbyseven(#ops
                 writer.add_summary(summary, step)
                 if step % FLAGS.log_interval == 0:
                     print("{} training loss: {}".format(step, loss))
+                """run a validation after certain number of steps"""
                 step += 1
-            """run a validation after certain number of epoch"""
-            if epoch % FLAGS.validation_interval == 0:
-                index = 0
-                accumu_loss = .0
-                count = .0
-                while index < len(test_seqs):
-                    #get a batch
-                    frame_names, index = get_batch(index, FLAGS.batch_size, test_seqs)
-                    feed_dict = {file_names_placeholder:
-                                frame_names}
-                    loss, summary, real_saves = sess.run(
-                            [loss_op, val_merged_summary, saves],
-                            feed_dict=feed_dict
-                            )
-                    accumu_loss += loss
-                    count += 1
-                    writer.add_summary(summary, step)
-                    save_imgs(real_saves,
-                            'step_{}_validation_{}'.format(gstep,
-                                int(count)), real_log_dir)
-                accumu_loss /= count
-                summary = sess.run(val_loss_summary,
-                        feed_dict={val_loss_ph: accumu_loss})
-                writer.add_summary(summary, step)
-                print("{}: validation loss {}".format(step, accumu_loss))
-                save_path = saver.save(sess, os.path.join(real_log_dir,
-                "model.ckpt"), global_step=global_step)
-                print("model saved to {}".format(save_path))
-                with open("save_path.txt", "w") as f:
-                    f.write(save_path)
+        print("{} validating...".format(step))
+        random.shuffle(val_seqs)
+        val_index = 0
+        accumu_loss = .0
+        count = 0
+        while val_index < len(val_seqs):
+            #get a batch
+            frame_names, index = get_batch(val_index, FLAGS.batch_size, val_seqs)
+            feed_dict = {file_names_placeholder:
+                        frame_names}
+            loss, summary, real_saves, gstep = sess.run(
+                    [loss_op, val_merged_summary, saves,
+                        global_step],
+                    feed_dict=feed_dict
+                    )
+            accumu_loss += loss
+            writer.add_summary(summary, step)
+            save_imgs(real_saves,
+                    'step_{}_validation_{}'.format(gstep,
+                        int(count)), real_log_dir)
+            count += 1
+            if count >= FLAGS.validation_batch:
+                break
+        accumu_loss /= float(count)
+        summary = sess.run(val_loss_summary,
+                feed_dict={val_loss_ph: accumu_loss})
+        writer.add_summary(summary, step)
+        print("{}: validation loss {}".format(step, accumu_loss))
+        save_path = saver.save(sess, os.path.join(real_log_dir,
+        "model.ckpt"), global_step=global_step)
+        print("model saved to {}".format(save_path))
+        with open("save_path.txt", "w") as f:
+            f.write(save_path)
+
         sess.run(q_close_op) #close the queue
         coord.request_stop()
         coord.join(threads)
