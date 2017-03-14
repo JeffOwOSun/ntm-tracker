@@ -14,3 +14,4 @@ visualize.sh
 *.txt
 log
 *.bak
+test_sequences/
