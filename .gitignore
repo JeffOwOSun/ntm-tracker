@@ -15,3 +15,4 @@ visualize.sh
 log
 *.bak
 test_sequences/
+*.png

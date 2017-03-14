@@ -289,19 +289,22 @@ class NTMCell(object):
             3. initial read value [batch, read_head_size, mem_dim]
             4. initial controller state
         """
-        with tf.variable_scope("init_state_{}".format(batch_size)):
+        with tf.variable_scope("init_state".format(batch_size)):
             M = tf.tanh(tf.get_variable("M",
-                    [batch_size, self.mem_size, self.mem_dim],
+                    [self.mem_size, self.mem_dim],
                     dtype=tf.float32, initializer=initializer))
+            M = tf.stack([M]*batch_size, 0)
             w = tf.sigmoid(tf.get_variable("w",
-                    [batch_size,
-                        self.read_head_size+self.write_head_size,
+                    [self.read_head_size+self.write_head_size,
                         self.mem_size], dtype=tf.float32,
                     initializer=initializer))
+            w = tf.stack([w]*batch_size, 0)
             read = tf.tanh(tf.get_variable("read",
-                    [batch_size, self.read_head_size, self.mem_dim],
+                    [self.read_head_size, self.mem_dim],
                     dtype=tf.float32,
                     initializer=initializer))
+            read = tf.stack([read]*batch_size, 0)
+
             controller_state = self.controller.zero_state(batch_size, tf.float32)
         state = {
                 'M': M,

@@ -8,16 +8,7 @@ from multiprocessing import Pool
 import scipy.misc
 import xml.etree.ElementTree as ET
 from tensorflow.python.platform import flags
-flags.DEFINE_string("image_dir", "", "dir for data")
-flags.DEFINE_string("annotation_dir", "", "dir for data")
-flags.DEFINE_string("output_dir", "", "dir for outputs")
-flags.DEFINE_boolean("save_imgs", False, "flag to indicate whether to save the actual cropped image. If set to true, the bmp formatted crop will be saved. Use this for debugging purpose. [False]")
-flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
-flags.DEFINE_integer("cropbox_grid", 7, "side length of grid, on which the ground truth will be generated")
-flags.DEFINE_integer("bbox_grid", 3, "side length of bbox grid")
 FLAGS = flags.FLAGS
-flags.DEFINE_float("deform_threshold", 0.1, "criterion to stop the producing of bbox")
-flags.DEFINE_float("zoom_threshold", 0.1, "criterion to stop the producing of bbox upon zoom in/out of object")
 
 def join_lists(list_of_lists):
     return [x for sublist in list_of_lists for x in sublist]
@@ -83,8 +74,7 @@ def normalize_bbox(size, bbox):
             y2/float(height-1),
             x2/float(width-1)]
 
-def calculate_cropbox(normalbbox, cropbox_grid=FLAGS.cropbox_grid,
-        bbox_grid=FLAGS.bbox_grid):
+def calculate_cropbox(normalbbox, cropbox_grid, bbox_grid):
     """
     Args:
         bbox: [y1, x1, y2, x2], all are normalized float values
@@ -140,10 +130,10 @@ def calculate_transformation_test():
     np.testing.assert_almost_equal(transformed_bbox, [0,0,1,1])
     print("SUCCESS:", transformed_bbox)
 
-def bbox_legal(normalbbox, cropbox, cropbox_grid=FLAGS.cropbox_grid,
-        bbox_grid=FLAGS.bbox_grid,
-        deform_threshold=FLAGS.deform_threshold,
-        zoom_threshold=FLAGS.zoom_threshold):
+def bbox_legal(normalbbox, cropbox, cropbox_grid,
+        bbox_grid,
+        deform_threshold,
+        zoom_threshold):
     """
     make sure normalbbox is within cropbox, and is not too different from
     initial scale and aspect ratio
@@ -211,7 +201,7 @@ def discrete_gauss_test():
 
 
 def generate_gt(normalbbox,
-        cropbox_grid=FLAGS.cropbox_grid, bbox_grid=FLAGS.bbox_grid):
+        cropbox_grid, bbox_grid):
     """
     given the transformed normalbbox and grid size, generate the ground
     truth
@@ -224,7 +214,7 @@ def generate_gt(normalbbox,
     return gt
 
 def get_img_path_from_anno_path(anno_full_path,
-        anno_dir=FLAGS.annotation_dir, image_dir=FLAGS.image_dir):
+        anno_dir, image_dir):
     anno_relative_path = anno_full_path[len(anno_dir)+1:]
     image_relative_path = anno_relative_path[:-3]+'JPEG'
     image_full_path = os.path.join(image_dir, image_relative_path)
@@ -270,7 +260,9 @@ def process_sequence(root):
                 this object has already appeared in previous frames
                 """
                 """make sure this normalized bbox is legal"""
-                if bbox_legal(normalbbox, cropboxes[trackid]):
+                if bbox_legal(normalbbox, cropboxes[trackid],
+                        FLAGS.cropbox_grid, FLAGS.bbox_grid,
+                        FLAGS.deform_threshold, FLAGS.zoom_threshold):
                     """record effective frame"""
                     records[trackid].append(parsed_frame['filename'])
                     """calculate the gt using previously saved
@@ -290,7 +282,9 @@ def process_sequence(root):
                 gt.tofile(os.path.join(output_dir,
                     parsed_frame['filename']+'.bin'))
                 """save the metadata for cropping in tensorflow"""
-                image_full_path = get_img_path_from_anno_path(anno_full_path)
+                image_full_path =\
+                get_img_path_from_anno_path(anno_full_path,
+                        FLAGS.annotation_dir, FLAGS.image_dir)
                 with open(os.path.join(output_dir,
                         parsed_frame['filename']+'.txt'), 'w') as f:
                     f.write("{crop[0]},{crop[1]},{crop[2]},{crop[3]},{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]},{image_path}".format(crop=cropboxes[trackid],bbox=transformed_bbox,image_path=image_full_path))
@@ -349,6 +343,15 @@ def main():
 
 
 if __name__ == '__main__':
+    flags.DEFINE_string("image_dir", "", "dir for data")
+    flags.DEFINE_string("annotation_dir", "", "dir for data")
+    flags.DEFINE_string("output_dir", "", "dir for outputs")
+    flags.DEFINE_boolean("save_imgs", False, "flag to indicate whether to save the actual cropped image. If set to true, the bmp formatted crop will be saved. Use this for debugging purpose. [False]")
+    flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
+    flags.DEFINE_integer("cropbox_grid", 7, "side length of grid, on which the ground truth will be generated")
+    flags.DEFINE_integer("bbox_grid", 3, "side length of bbox grid")
+    flags.DEFINE_float("deform_threshold", 0.1, "criterion to stop the producing of bbox")
+    flags.DEFINE_float("zoom_threshold", 0.1, "criterion to stop the producing of bbox upon zoom in/out of object")
     if FLAGS.run_test:
         calculate_transformation_test()
         discrete_gauss_test()

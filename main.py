@@ -204,7 +204,7 @@ def get_input(batch_size):
     y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
     cropbox = tf.stack([y1,x1,y2,x2])
     cropboxes, img_filenames = tf.train.batch([cropbox, img_filename],
-            batch_size = batch_size, num_threads=1)
+            batch_size = batch_size, num_threads=7)
     """process the imgs"""
     img_q = tf.FIFOQueue(batch_size, tf.string)
     img_enq_op = img_q.enqueue_many(img_filenames)
@@ -216,7 +216,7 @@ def get_input(batch_size):
     my_img = my_img - VGG_MEAN
     batch_img = tf.train.batch([my_img],
             batch_size = batch_size,
-            num_threads = 1)
+            num_threads=7)
     batch_img = tf.image.crop_and_resize(batch_img, cropboxes,
             tf.range(batch_size), [224, 224])
     with tf.control_dependencies([txt_enq_op, img_enq_op]):
@@ -232,7 +232,7 @@ def get_input(batch_size):
             [FLAGS.gt_width, FLAGS.gt_width])
     batch_gt = tf.train.batch([gt],
             batch_size = batch_size,
-            num_threads = 1)
+            num_threads = 7)
     with tf.control_dependencies([bin_enq_op]):
         batch_gt = tf.identity(batch_gt)
     close_qs_op = tf.group(txt_cls_op, img_cls_op, bin_cls_op)
@@ -277,7 +277,7 @@ def read_imgs(batch_size):
     # convert the queue-based image stream into a batch
     batch_img = tf.train.batch([my_img],
             batch_size = batch_size,
-            num_threads = 1)
+            num_threads = 7)
     return enqueue_placeholder, enqueue_op, queue_close_op, batch_img
 
 def read_imgs_withbbox(batch_size):
@@ -327,10 +327,11 @@ def train_and_val_sevenbyseven(#ops
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
         # initialize variables
+        sess.run(tf.global_variables_initializer())
         if FLAGS.ckpt_path:
             saver.restore(sess, FLAGS.ckpt_path)
-        else:
-            sess.run(tf.global_variables_initializer())
+        #else:
+        #    sess.run(tf.global_variables_initializer())
         print("start to run the training.")
         """
         1. get the statistics
