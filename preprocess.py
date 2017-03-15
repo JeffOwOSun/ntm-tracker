@@ -112,6 +112,10 @@ def calculate_transformation(cropbox):
     return transformation
 
 def apply_transformation(normalbbox, transformation):
+    """
+    convert a normalized bbox in image space to normalized bbox in
+    cropbox space
+    """
     y1, x1, y2, x2 = normalbbox
     p1 = np.array([x1, y1, 1])
     p2 = np.array([x2, y2, 1])
