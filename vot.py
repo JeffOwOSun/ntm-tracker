@@ -101,9 +101,9 @@ class VOT(object):
             self._image = str(request.image)
             self._trax.status(request.region)
         else:
-            self._files = [x.strip('\n') for x in open('test_sequences/bag/images.txt', 'r').readlines()]
+            self._files = [x.strip('\n') for x in open('images.txt', 'r').readlines()]
             self._frame = 0
-            self._region = convert_region(parse_region(open('test_sequences/bag/region.txt', 'r').readline()), region_format)
+            self._region = convert_region(parse_region(open('region.txt', 'r').readline()), region_format)
             self._result = []
 
     def region(self):

@@ -16,3 +16,4 @@ log
 *.bak
 test_sequences/
 *.png
+vot-workspace

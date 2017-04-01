@@ -42,11 +42,11 @@ class NTMCell(object):
         self.output_dim = output_dim
         self.write_first = write_first
 
-        controller_cell = tf.contrib.rnn.BasicLSTMCell(
-                controller_hidden_size, forget_bias=0.0,
-                state_is_tuple=False)
         self.controller = tf.contrib.rnn.MultiRNNCell(
-                [controller_cell] * controller_num_layers,
+                [tf.contrib.rnn.BasicLSTMCell(
+                    controller_hidden_size, forget_bias=0.0,
+                    state_is_tuple=False)
+                    for x in xrange(controller_num_layers)],
                 state_is_tuple=False)
 
 

@@ -44,6 +44,7 @@ flags.DEFINE_integer("sequence_length", 20, "The length of input sequences")
 flags.DEFINE_integer("model_length", 20, "The length of total steps of the tracker. Determines the physical length of the architecture in the graph. Affects the depth of back propagation in time. Longer input will be truncated")
 flags.DEFINE_integer("batch_size", 16, "size of batch")
 flags.DEFINE_string("feature_layer", "vgg_16/pool5/MaxPool:0", "The layer of feature to be put into NTM as input")
+#flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
 flags.DEFINE_integer("max_gradient_norm", 5, "for gradient clipping normalization")
 flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
 flags.DEFINE_float("momentum", 0.9, "learning rate")
@@ -71,12 +72,14 @@ flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox re
 flags.DEFINE_integer("mem_size", 128, "size of mem")
 flags.DEFINE_integer("mem_dim", 20, "dim of mem")
 flags.DEFINE_boolean("test_input", False, "test the new get_input function")
+flags.DEFINE_boolean("find_validation_batch", False, "find the actual validation batch by simulating shuffling")
 flags.DEFINE_integer("gt_width", 7, "width of ground truth. a value of 7 means a 7x7 ground truth")
 flags.DEFINE_integer("gt_depth", 8, "number of bytes used for each pixel")
 flags.DEFINE_string("sequences_dir", "", "dir to look for sequences")
 flags.DEFINE_integer("validation_interval", 100, "number of steps before validation")
 flags.DEFINE_integer("validation_batch", 1, "validate only this number of batches")
-flags.DEFINE_boolean("skip_frame", True, "turn on skip frame to enrich input")
+flags.DEFINE_integer("min_skip_len", 1, "minimal number of frames to skip")
+flags.DEFINE_integer("max_skip_len", 5, "maximal number of frames to skip")
 
 FLAGS = flags.FLAGS
 
@@ -109,8 +112,7 @@ def save_imgs(imgs, filename, savedir=real_log_dir):
             bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
-def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
-        min_length=FLAGS.sequence_length, skip_frame=False):
+def get_valid_sequences(sequences_dir=FLAGS.sequences_dir, min_length=FLAGS.sequence_length, min_skip_len=FLAGS.min_skip_len, max_skip_len=FLAGS.max_skip_len):
     """dirs of sequences"""
     sequences = [os.path.join(sequences_dir,x) for x in
             sorted(os.listdir(sequences_dir))]
@@ -125,8 +127,8 @@ def get_valid_sequences(sequences_dir=FLAGS.sequences_dir,
         Only retain the files that are long enough.
         For long sequences, dilate the steps taken to enrich the input
         """
-        max_skip_len = min(len(files) / min_length, 5) if skip_frame else 1
-        for skip in xrange(1,max_skip_len+1):
+        actual_max_skip_len = min(len(files) / min_length, max_skip_len)
+        for skip in xrange(min_skip_len, actual_max_skip_len+1):
             sliced = files[::skip][:min_length]
             result.append((seqdir, sliced))
             if 'train' in seqdir:
@@ -296,7 +298,7 @@ def test_read_imgs():
                 }
         sess.run(enqueue_op, feed_dict=feed_dict)
         features = create_vgg(batch_img, FLAGS.feature_layer)
-        saver = tf.train.Saver()
+        saver = tf.train.Saver(max_to_keep=1000)
         saver.restore(sess, "./vgg_16.ckpt")
         output = sess.run(features)
         print(output.shape)
@@ -320,9 +322,9 @@ def train_and_val_sevenbyseven(#ops
         global_step,
         get_batch):
     #check_op = tf.add_check_numerics_ops()
-    with tf.Session() as sess:
+    with tf.Session(config=tf.ConfigProto(log_device_placement=False)) as sess:
         print('session started')
-        saver = tf.train.Saver()
+        saver = tf.train.Saver(max_to_keep=1000)
         writer = tf.summary.FileWriter(real_log_dir, sess.graph)
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
@@ -341,7 +343,7 @@ def train_and_val_sevenbyseven(#ops
         """
         #TODO: replace this
         print("getting valid sequences...")
-        _, train_seqs, val_seqs = get_valid_sequences(skip_frame=FLAGS.skip_frame)
+        _, train_seqs, val_seqs = get_valid_sequences()
         print('{} sequences after length filtering'.format(
             len(train_seqs)+len(val_seqs)))
         #shuffle the order
@@ -1809,39 +1811,41 @@ def ntm_sevenbyseven():
     shape of outputs: [batch, model_length, 1]
     """
     print(inputs.get_shape().as_list())
-    outputs, output_logits, Ms, ws, reads = tracker(inputs)
+    (outputs, output_logits,
+            #Ms, ws, reads
+            ) = tracker(inputs)
     print(output_logits.get_shape().as_list())
-    """
-    add summaries
-    """
-    print(Ms.get_shape().as_list())
-    reshape_Ms = tf.reshape(Ms,
-        [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*total_steps, 1])
-    train_summaries.append(tf.summary.image('train_M', reshape_Ms,
-        max_outputs=FLAGS.batch_size))
-    val_summaries.append(tf.summary.image('val_M', reshape_Ms,
-        max_outputs=FLAGS.batch_size))
-    """w"""
-    print(ws.get_shape().as_list())
-    reshape_w_reads = tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
-            [FLAGS.batch_size, FLAGS.mem_size*FLAGS.read_head_size, total_steps, 1])
-    reshape_w_writes = tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
-            [FLAGS.batch_size, FLAGS.mem_size*FLAGS.read_head_size, total_steps, 1])
-    train_summaries.append(tf.summary.image('train_w_reads', reshape_w_reads,
-            max_outputs=FLAGS.batch_size))
-    train_summaries.append(tf.summary.image('train_w_writes', reshape_w_writes,
-            max_outputs=FLAGS.batch_size))
-    val_summaries.append(tf.summary.image('val_w_reads', reshape_w_reads,
-            max_outputs=FLAGS.batch_size))
-    val_summaries.append(tf.summary.image('val_w_writes', reshape_w_writes,
-            max_outputs=FLAGS.batch_size))
-    """reads"""
-    reshape_reads = tf.reshape(reads, [FLAGS.batch_size*FLAGS.read_head_size,
-                FLAGS.mem_dim, total_steps, 1])
-    train_summaries.append(tf.summary.image('train_reads', reshape_reads,
-            max_outputs=FLAGS.batch_size*FLAGS.read_head_size))
-    val_summaries.append(tf.summary.image('val_reads', reshape_reads,
-            max_outputs=FLAGS.batch_size*FLAGS.read_head_size))
+    #"""
+    #add summaries
+    #"""
+    #print(Ms.get_shape().as_list())
+    #reshape_Ms = tf.reshape(Ms,
+    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*total_steps, 1])
+    #train_summaries.append(tf.summary.image('train_M', reshape_Ms,
+    #    max_outputs=FLAGS.batch_size))
+    #val_summaries.append(tf.summary.image('val_M', reshape_Ms,
+    #    max_outputs=FLAGS.batch_size))
+    #"""w"""
+    #print(ws.get_shape().as_list())
+    #reshape_w_reads = tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+    #        [FLAGS.batch_size, FLAGS.mem_size*FLAGS.read_head_size, total_steps, 1])
+    #reshape_w_writes = tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+    #        [FLAGS.batch_size, FLAGS.mem_size*FLAGS.read_head_size, total_steps, 1])
+    #train_summaries.append(tf.summary.image('train_w_reads', reshape_w_reads,
+    #        max_outputs=FLAGS.batch_size))
+    #train_summaries.append(tf.summary.image('train_w_writes', reshape_w_writes,
+    #        max_outputs=FLAGS.batch_size))
+    #val_summaries.append(tf.summary.image('val_w_reads', reshape_w_reads,
+    #        max_outputs=FLAGS.batch_size))
+    #val_summaries.append(tf.summary.image('val_w_writes', reshape_w_writes,
+    #        max_outputs=FLAGS.batch_size))
+    #"""reads"""
+    #reshape_reads = tf.reshape(reads, [FLAGS.batch_size*FLAGS.read_head_size,
+    #            FLAGS.mem_dim, total_steps, 1])
+    #train_summaries.append(tf.summary.image('train_reads', reshape_reads,
+    #        max_outputs=FLAGS.batch_size*FLAGS.read_head_size))
+    #val_summaries.append(tf.summary.image('val_reads', reshape_reads,
+    #        max_outputs=FLAGS.batch_size*FLAGS.read_head_size))
 
     """
     now the subgraph to convert model output sequence to perceivable heatmaps
@@ -1930,6 +1934,29 @@ def ntm_sevenbyseven():
             global_step,
             sevenbyseven_get_batch)
 
+def find_validation_batch(target_step=1700):
+    print("getting valid sequences...")
+    _, train_seqs, val_seqs = get_valid_sequences()
+    print('{} sequences after length filtering'.format(
+        len(train_seqs)+len(val_seqs)))
+    num_train = len(train_seqs)/FLAGS.batch_size*FLAGS.batch_size
+    num_val = len(val_seqs)/FLAGS.batch_size*FLAGS.batch_size
+    train_seqs = train_seqs[:num_train]
+    val_seqs = val_seqs[:num_val]
+    print('{} train seqs, {} val seqs'.format(
+        len(train_seqs), len(val_seqs)))
+    step = 0 #this is not global step, and is only relevant to logging
+    random.shuffle(train_seqs)
+    while True:
+        if step % FLAGS.validation_interval == 0:
+            random.shuffle(val_seqs)
+        if step == target_step: break
+        step += 1
+    print(val_seqs)
+    with open('validation_seqs_{}.pkl'.format(target_step), 'w') as f:
+        pickle.dump(val_seqs, f)
+    return val_seqs
+
 def main(_):
     """
     1. create graph
@@ -1977,5 +2004,7 @@ if __name__ == '__main__':
         sanity_check_compressor(pca=True)
     elif (FLAGS.copy_paste):
         copy_paste()
+    elif (FLAGS.find_validation_batch):
+        find_validation_batch()
     else:
         tf.app.run()

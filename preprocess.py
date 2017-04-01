@@ -213,7 +213,7 @@ def generate_gt(normalbbox,
     y1, x1, y2, x2 = normalbbox
     cx = (x1 + x2) / 2.
     cy = (y1 + y2) / 2.
-    sigma = bbox_grid/4.
+    sigma = bbox_grid/3. #previously it was 4.
     gt = discrete_gauss((cx,cy), (cropbox_grid, cropbox_grid), sigma)
     return gt
 

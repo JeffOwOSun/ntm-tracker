@@ -43,9 +43,10 @@ class LoopNTMTracker(object):
                     stack_into_tensor(final_result[2], 1,
                         name="output_logits"),
                     #M
-                    stack_into_tensor(final_result[-3], 3, name="Ms"),
-                    stack_into_tensor(final_result[-2], 3, name="ws"),
-                    stack_into_tensor(final_result[-1], 3, name="reads"))
+                    #stack_into_tensor(final_result[-3], 3, name="Ms"),
+                    #stack_into_tensor(final_result[-2], 3, name="ws"),
+                    #stack_into_tensor(final_result[-1], 3, name="reads")
+                    )
 
     def _loop_body(self, time, outputs, output_logits, inputs, M, w,
                         read, controller_state, Ms, ws, reads):

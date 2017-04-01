@@ -1,6 +1,9 @@
 """
 interface for the VOTchallenge
 """
+import os
+#disable GPU
+os.environ['CUDA_VISIBLE_DEVICES']=''
 import sys
 import vot
 from ntm_cell import NTMCell
@@ -20,16 +23,15 @@ from skimage import measure
 
 flags = tf.app.flags
 flags.DEFINE_integer("input_depth", 515, "depth of input feature")
-flags.DEFINE_string("vgg_model_frozen", "./vgg_16_frozen.pb", "The pb file of the frozen vgg_16 network")
+flags.DEFINE_string("vgg_model_frozen", "/home/jowos/git/ntm-tracker/vgg_16_frozen.pb", "The pb file of the frozen vgg_16 network")
 flags.DEFINE_string("feature_layer", "vgg_16/pool5/MaxPool:0", "The layer of feature to be put into NTM as input")
 flags.DEFINE_integer("cropbox_grid", 7, "side length of grid, on which the ground truth will be generated")
 flags.DEFINE_integer("bbox_grid", 3, "side length of bbox grid")
-flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-03-15 00:08:06.637178batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-7x7-write1st-saveimgs-skipframe-memdim20-memdize128-unifiedzerostate/model.ckpt-2400", "path for the ckpt file to be restored")
+flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-03-18 02:58:32.305332batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-7x7-saveimgs-skipframe5-memdim20-memdize128-unifiedzerostate/model.ckpt-600", "path for the ckpt file to be restored")
+flags.DEFINE_boolean("save_img", False, "whether to save intermediate outputs")
 
 FLAGS=flags.FLAGS
 
-VGG_MEAN = tf.constant([123.68, 116.78, 103.94], dtype=tf.float32,
-        shape=[1,1,3], name="VGG_MEAN")
 
 def bb_iou(boxA, boxB):
     """
@@ -68,11 +70,14 @@ def reject_outliers(data, m = 2.):
     return data[s<m]
 
 class NTMTracker(object):
-    def __init__(self, imagepath, region):
+    def __init__(self, imagepath, region, save_prefix=''):
+        self.VGG_MEAN = tf.constant([123.68, 116.78, 103.94], dtype=tf.float32,
+                shape=[1,1,3], name="VGG_MEAN")
         """
         1. create an NTMTracker
         2. initialize with the image and region
         """
+        self.save_prefix = save_prefix
         self.frame = 0
         self.init_region = region
         """
@@ -103,6 +108,12 @@ class NTMTracker(object):
         #run the tracker
         #this output is discarded
         self._run_tracker(self.sess, features)
+        ratio = FLAGS.bbox_grid/float(FLAGS.cropbox_grid)
+        y1 = .5-ratio/2
+        x1 = .5-ratio/2
+        y2 = .5+ratio/2
+        x2 = .5+ratio/2
+        self._save_imgs(bbox=[y1,x1,y2,x2])
 
     def track(self, imagepath):
         self.frame += 1
@@ -129,29 +140,36 @@ class NTMTracker(object):
         self._update_bbox(self.image_size, new_region)
         return new_region
 
-    def _save_imgs(self):
-        fig, axs = plt.subplots(3,1,figsize=(3,1), dpi=512)
-        ax = axs[0]
-        ax.imshow(self.cropped_input_image)
-        ax.axis('off')
+    def _save_imgs(self, bbox=None):
+        if FLAGS.save_img:
+            #save and visualize bbox
+            if not bbox:
+                bbox = self.output_bbox
+            img = Image.fromarray(self.cropped_input_image)
+            #print('img.size',img.size)
+            d = ImageDraw.Draw(img)
+            y1,x1,y2,x2 = bbox
+            drawbox = [x1*224,y1*224,x2*224,y2*224]
+            #print('drawbox',drawbox)
+            d.rectangle(drawbox, outline="red")
+            img.save('{}outputimg_{}.png'.format(self.save_prefix, self.frame))
 
-        ax = axs[1]
-        ax.imshow(self.output_heatmap)
-        ax.axis('off')
+            #plot input, output_heatmap together with the visualized bbox
+            if hasattr(self, 'output_heatmap'):
+                fig, axs = plt.subplots(3,1,figsize=(9,3), dpi=100)
+                ax = axs[0]
+                ax.imshow(self.cropped_input_image)
+                ax.axis('off')
 
-        img = Image.fromarray(self.cropped_input_image)
-        #print('img.size',img.size)
-        d = ImageDraw.Draw(img)
-        y1,x1,y2,x2 = self.output_bbox
-        drawbox = [x1*224,y1*224,x2*224,y2*224]
-        #print('drawbox',drawbox)
-        d.rectangle(drawbox, outline="red")
-        img.save('outputimg_{}.png'.format(self.frame))
-        ax = axs[2]
-        ax.imshow(img)
-        ax.axis('off')
-        fig.savefig('image_save_{}.png'.format(self.frame), bbox_inches='tight', pad_inches=0)
-        plt.close(fig)
+                ax = axs[1]
+                ax.imshow(self.output_heatmap)
+                ax.axis('off')
+
+                ax = axs[2]
+                ax.imshow(img)
+                ax.axis('off')
+                fig.savefig('{}image_save_{}.png'.format(self.save_prefix,self.frame), bbox_inches='tight', pad_inches=0)
+                plt.close(fig)
 
     def _initial_normal_bbox(self):
         cx = cy = .5
@@ -325,12 +343,18 @@ class NTMTracker(object):
         need to normalize the bbox
         """
         x1,y1,w,h = region
+        normalized = False
+        if x1 < 1 and y1 < 1 and w < 1 and h < 1:
+            normalized = True
         bbox = (y1,x1,y1+h,x1+w)
         width, height = image_size
         #print(image_size)
         #print(bbox)
         #normalized bbox
-        self.normalized_bbox = preprocess.normalize_bbox((width, height), bbox)
+        if not normalized:
+            self.normalized_bbox = preprocess.normalize_bbox((width, height), bbox)
+        else:
+            self.normalized_bbox = bbox
         #print(self.normalized_bbox)
         #cropbox
         self.cropbox = preprocess.calculate_cropbox(self.normalized_bbox,
@@ -358,12 +382,12 @@ class NTMTracker(object):
         """
         self.image_ph = tf.placeholder(tf.float32)
         self.cropbox_ph = tf.placeholder(tf.float32, shape=[4]) #y1,x1,y2,x2
-        img = self.image_ph - VGG_MEAN
+        img = self.image_ph - self.VGG_MEAN
         batch_img = tf.image.crop_and_resize(
                 tf.expand_dims(img, 0),
                 tf.expand_dims(self.cropbox_ph, 0),
                 [0], crop_size)
-        self.image_after_crop = tf.cast(tf.squeeze(batch_img) + VGG_MEAN, tf.uint8)
+        self.image_after_crop = tf.cast(tf.squeeze(batch_img) + self.VGG_MEAN, tf.uint8)
         vgg_graph_def = tf.GraphDef()
         with open(FLAGS.vgg_model_frozen, "rb") as f:
             vgg_graph_def.ParseFromString(f.read())
@@ -392,18 +416,23 @@ class NTMTracker(object):
                     preprocess.apply_transformation(self.normalized_bbox,
                             self.transformation),
                     FLAGS.cropbox_grid, FLAGS.bbox_grid), [-1, 1])
-            features = np.concatenate([features, gt], 1)
             pad = np.zeros((gt.shape[0], 2))
             features = np.concatenate([features, pad], 1)
+            features = np.concatenate([features, gt], 1)
         else:
             pad = np.zeros((num_features, 3))
             features = np.concatenate([features, pad], 1)
             #[...,0,0,1]
-            frame_delimiter = np.concatenate([np.zeros((1, num_channels+2)),
-                np.ones((1,1))], 1)
+            frame_delimiter = np.concatenate([
+                np.zeros((1, num_channels+1)),
+                np.ones((1,1)),
+                np.zeros((1, 1))], 1)
             #[...,0,1,0]
-            feature_delimiters = np.concatenate([np.zeros((num_features, num_channels+1)),
-                np.ones((num_features,1)), np.zeros((num_features,1))], 1)
+            feature_delimiters = np.concatenate([
+                np.zeros((num_features, num_channels)),
+                np.ones((num_features,1)),
+                np.zeros((num_features,2))
+                ], 1)
             features = np.reshape(np.stack([features, feature_delimiters], axis=-1),
                     [num_features*2, num_channels+3])
             features = np.concatenate([frame_delimiter, features], 0)
