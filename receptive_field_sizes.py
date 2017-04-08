@@ -144,11 +144,11 @@ conv43Points = [
 
 def get_receptive_fields(points=conv43Points, layer='conv4_3'):
     rfs = {}
-    for x,y in points:
+    for y,x in points:
         boxes, layers = projectRF(-1, x, y, netDef=VGGDef, inputSize=224)
         for box in boxes:
-            if box['name'] == layer:
-                rfs[(x,y)] = box['corners']
+            if box['name'] == 'data':
+                rfs[(y,x)] = box['corners']
     return rfs
 
 if __name__ == '__main__':

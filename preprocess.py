@@ -213,7 +213,7 @@ def generate_gt(normalbbox,
     y1, x1, y2, x2 = normalbbox
     cx = (x1 + x2) / 2.
     cy = (y1 + y2) / 2.
-    sigma = bbox_grid/3. #previously it was 4.
+    sigma = bbox_grid/FLAGS.focus #previously it was 4.
     gt = discrete_gauss((cx,cy), (cropbox_grid, cropbox_grid), sigma)
     return gt
 
@@ -352,8 +352,9 @@ if __name__ == '__main__':
     flags.DEFINE_string("output_dir", "", "dir for outputs")
     flags.DEFINE_boolean("save_imgs", False, "flag to indicate whether to save the actual cropped image. If set to true, the bmp formatted crop will be saved. Use this for debugging purpose. [False]")
     flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
-    flags.DEFINE_integer("cropbox_grid", 7, "side length of grid, on which the ground truth will be generated")
-    flags.DEFINE_integer("bbox_grid", 3, "side length of bbox grid")
+    flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
+    flags.DEFINE_integer("bbox_grid", 4, "side length of bbox grid")
+    flags.DEFINE_integer("focus", 3, "side length of bbox grid")
     flags.DEFINE_float("deform_threshold", 0.1, "criterion to stop the producing of bbox")
     flags.DEFINE_float("zoom_threshold", 0.1, "criterion to stop the producing of bbox upon zoom in/out of object")
     if FLAGS.run_test:
