@@ -25,8 +25,8 @@ flags = tf.app.flags
 flags.DEFINE_integer("input_depth", 515, "depth of input feature")
 flags.DEFINE_string("vgg_model_frozen", "/home/jowos/git/ntm-tracker/vgg_16_frozen.pb", "The pb file of the frozen vgg_16 network")
 flags.DEFINE_string("feature_layer", "vgg_16/pool5/MaxPool:0", "The layer of feature to be put into NTM as input")
-flags.DEFINE_integer("cropbox_grid", 7, "side length of grid, on which the ground truth will be generated")
-flags.DEFINE_integer("bbox_grid", 3, "side length of bbox grid")
+flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
+flags.DEFINE_integer("bbox_grid", 4, "side length of bbox grid")
 flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-03-18 02:58:32.305332batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-7x7-saveimgs-skipframe5-memdim20-memdize128-unifiedzerostate/model.ckpt-600", "path for the ckpt file to be restored")
 flags.DEFINE_boolean("save_img", False, "whether to save intermediate outputs")
 

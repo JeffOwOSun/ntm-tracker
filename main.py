@@ -62,6 +62,7 @@ flags.DEFINE_boolean("two_step", False, "present the input in a 2-step manner")
 flags.DEFINE_boolean("sequential", False, "present the input in a sequential manner")
 flags.DEFINE_boolean("sevenbyseven", False, "present the input in a sequential manner, and with gt sevenbyseven")
 flags.DEFINE_boolean("eightbyeight", False, "present the input in a sequential manner, and with gt eightbyeight")
+flags.DEFINE_boolean("offsets", False, "gt is offsets tuple")
 flags.DEFINE_boolean("write_first", False, "write before read")
 flags.DEFINE_boolean("sanity_check", False, "check if dataset is correct")
 flags.DEFINE_boolean("sanity_check_compressor", False, "check if compressor is correct")
@@ -108,8 +109,21 @@ def save_imgs(imgs, filename, savedir=real_log_dir):
         for set_idx, img in enumerate(imgs):
             for length_idx in xrange(length):
                 ax = axs[batch_idx*len(imgs)+set_idx, length_idx]
-                ax.imshow(np.squeeze(img[batch_idx, length_idx,:,:,:]))
-                ax.axis('off')
+                #print(img.shape)
+                if len(img.shape) > 3:
+                    ax.imshow(np.squeeze(img[batch_idx, length_idx,:,:,:]))
+                    ax.axis('off')
+                else:
+                    #print(img[batch_idx, length_idx])
+                    ax.set_xlim(-.1,.1)
+                    ax.set_ylim(-.1,.1)
+                    ax.plot([img[batch_idx, length_idx, 1]],
+                            [-img[batch_idx, length_idx, 0]],
+                            marker='o', markersize=3,
+                            color="red")
+                    #xy = (img[batch_idx, length_idx, 1],
+                    #      img[batch_idx, length_idx, 0])
+                    #ax.annotate('(%s, %s)' % xy, xy=xy, textcoords='data')
     fig.savefig(os.path.join(savedir, filename+'.png'),
             bbox_inches='tight', pad_inches=0)
     plt.close(fig)
@@ -204,11 +218,19 @@ def get_input(batch_size):
     txt_enq_op = txt_q.enqueue_many(txts)
     txt_cls_op = txt_q.close()
     key, value = txt_rdr.read(txt_q)
-    record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],['']]
-    y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
-    cropbox = tf.stack([y1,x1,y2,x2])
-    cropboxes, img_filenames = tf.train.batch([cropbox, img_filename],
-            batch_size = batch_size, num_threads=1)
+    if FLAGS.offsets:
+        record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],[''],[.0],[.0]]
+        y1,x1,y2,x2,_,_,_,_,img_filename,y_offset,x_offset = tf.decode_csv(value, record_defaults)
+        cropbox = tf.stack([y1,x1,y2,x2])
+        cropboxes, img_filenames, y_offsets, x_offsets = tf.train.batch(
+                [cropbox, img_filename, y_offset, x_offset],
+                batch_size = batch_size, num_threads=1)
+    else:
+        record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],['']]
+        y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
+        cropbox = tf.stack([y1,x1,y2,x2])
+        cropboxes, img_filenames = tf.train.batch([cropbox, img_filename],
+                batch_size = batch_size, num_threads=1)
     """process the imgs"""
     img_q = tf.FIFOQueue(batch_size, tf.string)
     img_enq_op = img_q.enqueue_many(img_filenames)
@@ -225,6 +247,7 @@ def get_input(batch_size):
             tf.range(batch_size), [224, 224])
     with tf.control_dependencies([txt_enq_op, img_enq_op]):
         batch_img = tf.identity(batch_img)
+
     """process the ground truths"""
     bin_q = tf.FIFOQueue(batch_size, tf.string)
     bin_enq_op = bin_q.enqueue_many(bins)
@@ -241,7 +264,10 @@ def get_input(batch_size):
         batch_gt = tf.identity(batch_gt)
     close_qs_op = tf.group(txt_cls_op, img_cls_op, bin_cls_op)
 
-    return filename_nosuffix_ph, batch_img, batch_gt, close_qs_op
+    if FLAGS.offsets:
+        return filename_nosuffix_ph, batch_img, batch_gt, y_offsets, x_offsets, close_qs_op
+    else:
+        return filename_nosuffix_ph, batch_img, batch_gt, close_qs_op
 
 
 def test_get_input(batch_size=1):
@@ -2288,6 +2314,261 @@ def find_validation_batch(target_step=1700):
         pickle.dump(val_seqs, f)
     return val_seqs
 
+def ntm_offsets():
+    """
+    sequential means instead of presenting the whole feature map at once, I
+    present each feature one by one
+    1. create graph
+    """
+    """get the inputs"""
+    train_summaries = []
+    val_summaries = []
+    file_names_placeholder, batch_img, batch_gt, y_offsets, x_offsets, q_close_op =\
+            get_input(FLAGS.batch_size*FLAGS.sequence_length)
+    train_summaries.append(tf.summary.image('train_batch_img', batch_img,
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length))
+    val_summaries.append(tf.summary.image('val_batch_img', batch_img,
+        max_outputs=FLAGS.batch_size*FLAGS.sequence_length))
+    """import VGG"""
+    vgg_graph_def = tf.GraphDef()
+    with open(FLAGS.vgg_model_frozen, "rb") as f:
+        vgg_graph_def.ParseFromString(f.read())
+    """the features"""
+    features = tf.import_graph_def(vgg_graph_def, input_map={'inputs':
+        batch_img}, return_elements=['vgg_16/conv4/conv4_3/Relu:0'])[0]
+    features_dim = features.get_shape().as_list()
+    features_dim[1] = features_dim[2] = 8
+    """
+    extract an 8 by 8 sub map from the conv4_3 feature map
+    """
+    features, num_features = extract_features(features)
+    num_channels = features_dim[-1]
+    print('features_dim', features_dim)
+    print("num_channels:", num_channels)
+    """
+    the inputs;
+    features is of shape [batch * seq_length, 28, 28, 128]
+    originally it's reshaped to [batch, seq_len, num_features*num_channels]
+    now we want it to be [batch, seq_len*num_features, 128]
+    """
+
+    inputs = tf.reshape(features, shape=[FLAGS.batch_size,
+        FLAGS.sequence_length, num_features, num_channels], name="reshaped_inputs")
+    print('inputs shape', inputs.get_shape().as_list())
+    """
+    ground truth
+    """
+    gts = tf.reshape(batch_gt,
+            [FLAGS.batch_size, FLAGS.sequence_length, num_features],
+            name="gt_heatmap")
+    #print('reshaped inputs:', inputs.get_shape())
+    """
+    placeholder to accept target indicator input
+    because it's only for the 0th frame, so it's 2d
+    """
+    target = gts[:,0,:]
+    """
+    build the tracker inputs
+    the inputs should be a matrix of [batch_size, total_steps, num_features, feature_depth+2]
+    feature_depth+1-th bit is target delimiter
+    feature_depth-th bit is frame indicator
+    """
+    total_steps = FLAGS.sequence_length * (num_features + 1)
+    print("constructing inputs...")
+    #shape [batch, seq_len, num_features, depth+1]
+    inputs_padded = tf.concat([inputs, tf.zeros([FLAGS.batch_size,
+        FLAGS.sequence_length, num_features, 1])], 3)
+    #shape [batch, sequence_length-1, num_features, depth+1]
+    #shape [batch, 1, 1, depth]
+    dummy_feature = tf.zeros([1, 1, 1, num_channels])
+    #shape [batch, 1, 1, depth]
+    frame_delimiter = tf.concat([
+            dummy_feature,
+            tf.ones([1, 1, 1, 1], dtype=tf.float32),
+            ], 3)
+    #frame delimiters, number: sequence_length - 1
+    #shape [batch, sequence_length - 1, 1, 130]
+    frame_delimiters = tf.tile(frame_delimiter,
+            [FLAGS.batch_size, FLAGS.sequence_length, 1, 1],
+            name="frame_delimiters")
+    #now insert the frame delimiters
+    inputs_padded = tf.concat(
+            [inputs_padded, frame_delimiters], 2)
+    #now add back the zeroth frame
+    inputs_padded = tf.reshape(inputs_padded,
+            [
+                FLAGS.batch_size,
+                FLAGS.sequence_length*(num_features+1),
+                num_channels+1
+            ])
+    #now add the target indicators
+    target = tf.concat([
+            target,
+            tf.zeros([FLAGS.batch_size,
+                (FLAGS.sequence_length - 1) * (num_features + 1)+1,
+                ], dtype=tf.float32)], 1)
+    #dims: [batch_size, total_steps, 131]
+    inputs = tf.concat([
+        inputs_padded,
+        tf.expand_dims(target, -1)], -1)
+    print("constructing ground truths...")
+    #tf.summary.image("ground_truth", tf.reshape(gt_ph,
+    #    [-1,features_dim[1],features_dim[2],1]),
+    #    max_outputs=FLAGS.batch_size*FLAGS.sequence_length)
+    """
+    there will be
+    num_features + (sequence_length - 1) * (1 + 2 * num_features) steps
+
+    how to produce?
+    1. remove the first frame
+    2. pad the features with num_features zeros
+    3. pad the features with 1 zero at beginning
+    4. pad at the beginning num_features zeros
+    """
+
+    """
+    remove the first frame ground truth and create pad
+    the dimension for gt_ph [batch_size, seq_length, num_features]
+    """
+    #gt_pad = tf.zeros_like(gts[:,1:,:], dtype=tf.float32, name="gt_pad")
+    """
+    stack at last axis, so that every feature scalar is prepended by a zero
+    scalar
+    """
+    offsets = tf.stack([y_offsets, x_offsets], axis=1)
+    offsets = tf.reshape(offsets, [FLAGS.batch_size, FLAGS.sequence_length, 2])
+    #reshape_gts = tf.reshape(gts[:,1:,:],
+    #    [FLAGS.batch_size*(FLAGS.sequence_length-1),features_dim[1],features_dim[2],1])
+    #train_summaries.append(tf.summary.image("train_ground_truth",
+    #    reshape_gts,
+    #    max_outputs=FLAGS.batch_size*(FLAGS.sequence_length-1)))
+    #val_summaries.append(tf.summary.image("val_ground_truth",
+    #    reshape_gts,
+    #    max_outputs=FLAGS.batch_size*(FLAGS.sequence_length-1)))
+
+    print("constructing tracker...")
+    """the tracker"""
+    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
+    tracker = LoopNTMTracker(total_steps, 2,
+            initializer,
+            mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
+            controller_num_layers=FLAGS.num_layers,
+            controller_hidden_size=FLAGS.hidden_size,
+            read_head_size=FLAGS.read_head_size,
+            write_head_size=FLAGS.write_head_size,
+            write_first=FLAGS.write_first,)
+    """
+    shape of outputs: [batch, model_length, 2]
+    """
+    print(inputs.get_shape().as_list())
+    (outputs, output_logits,
+            #Ms, ws, reads
+            ) = tracker(inputs)
+    print(output_logits.get_shape().as_list())
+    #"""
+    #add summaries
+    #"""
+    #print(Ms.get_shape().as_list())
+    #reshape_Ms = tf.reshape(Ms,
+    #    [FLAGS.batch_size, FLAGS.mem_size, FLAGS.mem_dim*total_steps, 1])
+    #train_summaries.append(tf.summary.image('train_M', reshape_Ms,
+    #    max_outputs=FLAGS.batch_size))
+    #val_summaries.append(tf.summary.image('val_M', reshape_Ms,
+    #    max_outputs=FLAGS.batch_size))
+    #"""w"""
+    #print(ws.get_shape().as_list())
+    #reshape_w_reads = tf.reshape(ws[:,:FLAGS.read_head_size,:,:],
+    #        [FLAGS.batch_size, FLAGS.mem_size*FLAGS.read_head_size, total_steps, 1])
+    #reshape_w_writes = tf.reshape(ws[:,FLAGS.read_head_size:,:,:],
+    #        [FLAGS.batch_size, FLAGS.mem_size*FLAGS.read_head_size, total_steps, 1])
+    #train_summaries.append(tf.summary.image('train_w_reads', reshape_w_reads,
+    #        max_outputs=FLAGS.batch_size))
+    #train_summaries.append(tf.summary.image('train_w_writes', reshape_w_writes,
+    #        max_outputs=FLAGS.batch_size))
+    #val_summaries.append(tf.summary.image('val_w_reads', reshape_w_reads,
+    #        max_outputs=FLAGS.batch_size))
+    #val_summaries.append(tf.summary.image('val_w_writes', reshape_w_writes,
+    #        max_outputs=FLAGS.batch_size))
+    #"""reads"""
+    #reshape_reads = tf.reshape(reads, [FLAGS.batch_size*FLAGS.read_head_size,
+    #            FLAGS.mem_dim, total_steps, 1])
+    #train_summaries.append(tf.summary.image('train_reads', reshape_reads,
+    #        max_outputs=FLAGS.batch_size*FLAGS.read_head_size))
+    #val_summaries.append(tf.summary.image('val_reads', reshape_reads,
+    #        max_outputs=FLAGS.batch_size*FLAGS.read_head_size))
+
+    """
+    now the subgraph to convert model output sequence to perceivable heatmaps
+    """
+    """remove the output for first frame"""
+    output_gather = output_logits[:,num_features+1:,:]
+    #output_first_frame = output_gather[:, :num_features]
+    """extract the output for frame delimiter"""
+    output_gather = tf.reshape(output_gather, [FLAGS.batch_size,
+        FLAGS.sequence_length-1, num_features+1, 2])
+    #output_sequence_delimiter = output_gather[:,:,:1]
+    #shape of output_gather: [batch, sequence length-1, 2]
+    output_gather = output_gather[:,:,num_features,:]
+    #other_outputs = tf.concat([
+    #    tf.reshape(output_first_frame, [-1]),
+    #    tf.reshape(output_sequence_delimiter, [-1]),
+    #    tf.reshape(output_first_step, [-1])])
+    output_sigmoids = tf.tanh(output_gather)
+    #print('output_logits shape:', output_logits.get_shape())
+    #output_logits is in [batch, seq_length, output_dim]
+    #reshape it to [batch*seq_length, output_dim]
+    print("constructing loss...")
+    #"""soft max loss"""
+    #loss_op = tf.reduce_sum(
+    #    tf.nn.softmax_cross_entropy_with_logits(
+    #        logits=tf.reshape(output_gather, [-1, num_features]),
+    #        labels=tf.reshape(gt, [-1, num_features])
+    #        )) / (FLAGS.sequence_length-1)\
+    #    #+ tf.losses.log_loss(tf.zeros_like(other_outputs), tf.sigmoid(other_outputs))
+    """log loss"""
+    loss_op = tf.nn.l2_loss(output_sigmoids-offsets[:,1:,:])
+    train_summaries.append(tf.summary.scalar('train_loss', loss_op))
+    val_loss_ph = tf.placeholder(tf.float32)
+    val_loss_summary = tf.summary.scalar('val_loss', val_loss_ph)
+    """training op"""
+    tvars = tf.trainable_variables()
+    # the gradient tensors
+    global_step = tf.Variable(0, name='global_step', trainable=False)
+    grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
+            FLAGS.max_gradient_norm)
+    optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
+            decay=FLAGS.decay, momentum=FLAGS.momentum)
+    train_op = optimizer.apply_gradients(
+            zip(grads, tvars),
+            global_step = global_step)
+    train_merged_summary = tf.summary.merge(train_summaries)
+    val_merged_summary = tf.summary.merge(val_summaries)
+
+    """save training output images"""
+    input_save = tf.cast(tf.reshape(batch_img+tf.expand_dims(VGG_MEAN,0),
+        [FLAGS.batch_size, FLAGS.sequence_length, 224, 224, 3]), tf.uint8)
+    gt_save = tf.reshape(offsets, [FLAGS.batch_size, FLAGS.sequence_length,
+        2])
+    output_save = tf.reshape(output_gather, [FLAGS.batch_size,
+        FLAGS.sequence_length-1, 2])
+    #restore the length of zeroth frame
+    output_save = tf.concat([tf.zeros_like(output_save[:,:1,:]),
+        output_save], 1)
+
+    return (#ops
+            train_op, loss_op, q_close_op,
+            #input placeholders
+            file_names_placeholder, val_loss_ph,
+            #summaries
+            train_merged_summary,
+            val_merged_summary,
+            val_loss_summary,
+            #tensor to plot to files,
+            [input_save, gt_save, output_save],
+            #global step variable
+            global_step,
+            sevenbyseven_get_batch)
+
 def main(_):
     """
     1. create graph
@@ -2312,6 +2593,11 @@ def main(_):
         if not FLAGS.sequences_dir:
             raise Exception('must provide FLAGS.sequences_dir')
         params = ntm_8by8()
+        train_and_val_sevenbyseven(*params)
+    elif FLAGS.offsets:
+        if not FLAGS.sequences_dir:
+            raise Exception('must provide FLAGS.sequences_dir')
+        params = ntm_offsets()
         train_and_val_sevenbyseven(*params)
     else:
         train_op, loss_op, merged_summary, target_ph, gt_ph,\

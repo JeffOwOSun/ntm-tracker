@@ -76,6 +76,9 @@ def normalize_bbox(size, bbox):
 
 def calculate_cropbox(normalbbox, cropbox_grid, bbox_grid):
     """
+    calculate the cropbox coordinate in normalized form based on the given
+    normalized object bounding box. cropsbox_grid and bbox_grid are used to
+    define the enlarge ratio
     Args:
         bbox: [y1, x1, y2, x2], all are normalized float values
     """
@@ -95,6 +98,16 @@ def calculate_cropbox(normalbbox, cropbox_grid, bbox_grid):
     y1n = y_center - cropheight/2
     return [y1n, x1n, y2n, x2n]
 
+def calculate_offsets(normalbbox, init_normalbbox):
+    y1, x1, y2, x2 = normalbbox
+    x, y = (x1+x2)/2, (y1+y2)/2
+    y1, x1, y2, x2 = init_normalbbox
+    x0, y0 = (x1+x2)/2, (y1+y2)/2
+    return (y-y0, x-x0) #range of output is (-1, 1)
+    """
+    consider the normalization
+    1. should be in [0,1) range
+    """
 
 def calculate_transformation(cropbox):
     """
@@ -227,6 +240,7 @@ def get_img_path_from_anno_path(anno_full_path,
 def process_sequence(root):
     framefiles = sorted([x for x in os.listdir(root) if x.endswith('.xml')])
     cropboxes = {}
+    init_normalbbox = {}
     transformations = {}
     records = {}
     cropper = TFCropper()
@@ -245,6 +259,7 @@ def process_sequence(root):
                 """calculate cropbox"""
                 cropboxes[trackid] = calculate_cropbox(normalbbox,
                         FLAGS.cropbox_grid, FLAGS.bbox_grid)
+                init_normalbbox[trackid] = normalbbox
                 """calculate transformation"""
                 transformations[trackid] =\
                         calculate_transformation(cropboxes[trackid])
@@ -257,6 +272,7 @@ def process_sequence(root):
                         .5+FLAGS.bbox_grid/float(FLAGS.cropbox_grid)/2,
                         .5+FLAGS.bbox_grid/float(FLAGS.cropbox_grid)/2,
                         ]
+                offsets = (0, 0) #(y, x)
                 gt = generate_gt(transformed_bbox, FLAGS.cropbox_grid,
                         FLAGS.bbox_grid)
             else:
@@ -269,6 +285,8 @@ def process_sequence(root):
                         FLAGS.deform_threshold, FLAGS.zoom_threshold):
                     """record effective frame"""
                     records[trackid].append(parsed_frame['filename'])
+                    """calculate the offset of this bounding box"""
+                    offsets = calculate_offsets(normalbbox, init_normalbbox[trackid])
                     """calculate the gt using previously saved
                     transformation"""
                     transformation = transformations[trackid]
@@ -276,6 +294,9 @@ def process_sequence(root):
                         apply_transformation(normalbbox, transformation)
                     gt = generate_gt(transformed_bbox, FLAGS.cropbox_grid,
                             FLAGS.bbox_grid)
+            """
+            now if the bounding box is legal, a gt will have been produced above
+            """
             if gt is not None:
                 """one object one dir"""
                 unique_id = parsed_frame['seqname']+'_'+str(trackid)
@@ -291,7 +312,10 @@ def process_sequence(root):
                         FLAGS.annotation_dir, FLAGS.image_dir)
                 with open(os.path.join(output_dir,
                         parsed_frame['filename']+'.txt'), 'w') as f:
-                    f.write("{crop[0]},{crop[1]},{crop[2]},{crop[3]},{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]},{image_path}".format(crop=cropboxes[trackid],bbox=transformed_bbox,image_path=image_full_path))
+                    f.write("{crop[0]},{crop[1]},{crop[2]},{crop[3]},{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]},{image_path},{y_offset},{x_offset}".format(
+                        crop=cropboxes[trackid],bbox=transformed_bbox,
+                        image_path=image_full_path,
+                        y_offset=offsets[0], x_offset=offsets[1]))
 
                 """save the images for debug use"""
                 if FLAGS.save_imgs:
@@ -353,7 +377,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean("save_imgs", False, "flag to indicate whether to save the actual cropped image. If set to true, the bmp formatted crop will be saved. Use this for debugging purpose. [False]")
     flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
     flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
-    flags.DEFINE_integer("bbox_grid", 4, "side length of bbox grid")
+    flags.DEFINE_integer("bbox_grid", 6, "side length of bbox grid")
     flags.DEFINE_integer("focus", 3, "side length of bbox grid")
     flags.DEFINE_float("deform_threshold", 0.1, "criterion to stop the producing of bbox")
     flags.DEFINE_float("zoom_threshold", 0.1, "criterion to stop the producing of bbox upon zoom in/out of object")
