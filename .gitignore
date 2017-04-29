@@ -17,3 +17,4 @@ log
 test_sequences/
 *.png
 vot-workspace
+run.sh

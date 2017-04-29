@@ -7,6 +7,8 @@ from PIL import Image, ImageDraw
 from multiprocessing import Pool
 import scipy.misc
 import xml.etree.ElementTree as ET
+import random
+import copy
 from tensorflow.python.platform import flags
 FLAGS = flags.FLAGS
 
@@ -237,7 +239,13 @@ def get_img_path_from_anno_path(anno_full_path,
     image_full_path = os.path.join(image_dir, image_relative_path)
     return image_full_path
 
-def process_sequence(root):
+"""
+the old process_sequence logic
+1. every object is centered in the first frame
+2. only legal bounding boxes are recorded
+3. a legal bounding box must satisfy two constraints: deformation and zooming
+"""
+def old_process_sequence(root):
     framefiles = sorted([x for x in os.listdir(root) if x.endswith('.xml')])
     cropboxes = {}
     init_normalbbox = {}
@@ -330,9 +338,122 @@ def process_sequence(root):
                     d.rectangle([x1*224,y1*224,x2*224,y2*224], outline="red")
                     cropped.save(os.path.join(output_dir,
                         parsed_frame['filename']+'_crop.png'))
+
+    print('generated {} frames'.format(len(results)))
+
+#the new process_sequence logic
+#1. every object may not be centered in the first frame. In fact, we can devise an algorithm to calculate the correct location to place the first object so that the subsequent bounding boxes are within the window despite motion.
+#2. No more cropbox information is saved. This is because the actual cropbox used depend on the starting point of the desired sequence. Instead, we will generate the cropbox at run time
+
+def process_sequence(root):
+    #list of all the xml file names
+    framefiles = sorted([x for x in os.listdir(root) if x.endswith('.xml')])
+    records = {}
+
+    """
+    process each frame, and extract bbox information of all the objects in the frames, and prioritize the objects
+    """
+    for idx, framefile in enumerate(framefiles):
+        #print('processing {}'.format(framefile))
+        anno_full_path = os.path.join(root, framefile)
+        image_full_path =\
+                get_img_path_from_anno_path(anno_full_path,
+                        FLAGS.annotation_dir, FLAGS.image_dir)
+        #parse the frame xml to get sizes and bounding boxes
+        parsed_frame = parse_frame(anno_full_path)
+        size = parsed_frame['size']
+        #There may be more than one objects in this frame.
+        #We look at them one by one
+        for trackid, bbox in parsed_frame['objs'].items():
+            """normalize this boundingbox to [0,1] range"""
+            normalbbox = normalize_bbox(size, bbox)
+            record = {
+                    'filename': parsed_frame['filename'],
+                    'unique_id': parsed_frame['seqname']+'_'+str(trackid),
+                    'normalbbox': normalbbox,
+                    'image_full_path': image_full_path,
+                }
+            """keep a record"""
+            if trackid not in records:
+                records[trackid] = []
+            records[trackid].append(record)
+
+    results=[]
+    #now apply data augmentation
+    for trackid, obj_seq in records.items():
+        res = data_augmentation(obj_seq, bbox_grid=FLAGS.bbox_grid,
+                          cropbox_grid=FLAGS.cropbox_grid,
+                          seq_length=FLAGS.max_sequence_length)
+        results += res
+
+    #save results
+    for seq in results:
+        output_dir = os.path.join(FLAGS.output_dir, seq[0]['unique_id'])
+        ensure_dir(output_dir)
+        for record in seq:
+            with open(os.path.join(output_dir, record['filename']+'.txt'), 'w') as f:
+                f.write("{crop[0]},{crop[1]},{crop[2]},{crop[3]},{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]},{image_path},{y_offset},{x_offset}".format(
+                    crop=record['cropbox'],bbox=record['normalbbox'],
+                    image_path=record['image_full_path'],
+                    y_offset=record['offsets'][0],
+                    x_offset=record['offsets'][1]))
+
+    """
+    Now we have all the object-sequences.
+    Next step, we need to apply data-augmentation function to extract meaningful subsequences
+    """
     print('generated {} frames'.format(len(join_lists(records.values()))))
 
+"""
+given an list detailing the normalbbox of an object sequence, generate legal selections of the object sequence
+criterion:
+1. in a selection, the boundingbox of all frames should be within the cropbox region
+2. all selection should have the specified seq_length
+3. each selection should have different dilation, and dilation within one selection need not be uniform
+4. the starting position of the bbox in the first frame of the selection will depend on the movement span of the bbox in the whole selection
+"""
+def data_augmentation(obj_seq, bbox_grid=6, cropbox_grid=8,
+                      seq_length=20):
+    raw_length = len(obj_seq)
+    times = raw_length / seq_length
+    remainder = raw_length - times * seq_length
+    """dilute the sequence and sample sub sequences"""
+    results = []
+    for stepsize in xrange(1, times+1):
+        num_subseq = times / stepsize #number of subsequences that can be generated for this step size
+        #divide the remainder into num_subseq portions
+        remainder_shares = sorted(random.sample(range(remainder+num_subseq), num_subseq))
+        remainder_shares = [x-y-1 for x,y in zip(remainder_shares+[remainder-1], [0]+remainder_shares)]
+        start = 0
+        for r in remainder_shares:
+            #move start forward
+            start += r
+            #take the slice
+            target_slice = obj_seq[start:start+stepsize*seq_length:stepsize]
+            results.append(target_slice)
+            #move the start position
+            start = start+stepsize*seq_length
 
+    """now find the optimal cropbox location for each subsequence"""
+    final_results = []
+    for subseq in results:
+        #accumulate the bbox
+        accumu_bbox = [1.,1.,.0,.0]
+        for record in subseq:
+            y1,x1,y2,x2 = record["normalbbox"]
+            accumu_bbox[0] = min(accumu_bbox[0],y1)
+            accumu_bbox[1] = min(accumu_bbox[1],x1)
+            accumu_bbox[2] = max(accumu_bbox[2],y2)
+            accumu_bbox[3] = max(accumu_bbox[3],x2)
+
+        res = []
+        for record in subseq:
+            cp = copy.deepcopy(record)
+            cp['cropbox'] = accumu_bbox
+            res.append(cp)
+        final_results.append(res)
+
+    return final_results
 
 def main():
     """
@@ -356,6 +477,7 @@ def main():
     if FLAGS.output_dir == "":
         raise Exception("output_dir must be provided")
 
+    #sequences will contain all the folders of sequences
     sequences = []
     for root, dirs, files in os.walk(FLAGS.annotation_dir):
         """
@@ -378,9 +500,12 @@ if __name__ == '__main__':
     flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
     flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
     flags.DEFINE_integer("bbox_grid", 6, "side length of bbox grid")
-    flags.DEFINE_integer("focus", 3, "side length of bbox grid")
-    flags.DEFINE_float("deform_threshold", 0.1, "criterion to stop the producing of bbox")
-    flags.DEFINE_float("zoom_threshold", 0.1, "criterion to stop the producing of bbox upon zoom in/out of object")
+    flags.DEFINE_integer("focus", 3, "a coefficient that contributes to the sigma calculation of the generated gaussian")
+    flags.DEFINE_float("deform_threshold", 1., "criterion to stop the producing of bbox")
+    flags.DEFINE_float("zoom_threshold", 1., "criterion to stop the producing of bbox upon zoom in/out of object")
+
+    """data augmentation parameters"""
+    flags.DEFINE_integer("max_sequence_length", 20, "the longest sequence to produce")
     if FLAGS.run_test:
         calculate_transformation_test()
         discrete_gauss_test()
