@@ -12,6 +12,8 @@ import copy
 from tensorflow.python.platform import flags
 FLAGS = flags.FLAGS
 
+random.seed(42)
+
 def join_lists(list_of_lists):
     return [x for sublist in list_of_lists for x in sublist]
 
@@ -100,16 +102,21 @@ def calculate_cropbox(normalbbox, cropbox_grid, bbox_grid):
     y1n = y_center - cropheight/2
     return [y1n, x1n, y2n, x2n]
 
-def calculate_offsets(normalbbox, init_normalbbox):
-    y1, x1, y2, x2 = normalbbox
+def calculate_offsets(transformed_bbox, init_transformed_bbox):
+    y1, x1, y2, x2 = transformed_bbox
     x, y = (x1+x2)/2, (y1+y2)/2
-    y1, x1, y2, x2 = init_normalbbox
+    y1, x1, y2, x2 = init_transformed_bbox
     x0, y0 = (x1+x2)/2, (y1+y2)/2
     return (y-y0, x-x0) #range of output is (-1, 1)
     """
     consider the normalization
     1. should be in [0,1) range
     """
+
+def offset_bbox(init_transformed_bbox, offsets):
+    dy, dx = offsets
+    y1, x1, y2, x2 = init_transformed_bbox
+    return (y1+dy, x1+dx, y2+dy, x2+dx)
 
 def calculate_transformation(cropbox):
     """
@@ -220,7 +227,7 @@ def discrete_gauss_test():
 
 
 def generate_gt(normalbbox,
-        cropbox_grid, bbox_grid):
+        cropbox_grid, bbox_grid, focus=3):
     """
     given the transformed normalbbox and grid size, generate the ground
     truth
@@ -228,7 +235,7 @@ def generate_gt(normalbbox,
     y1, x1, y2, x2 = normalbbox
     cx = (x1 + x2) / 2.
     cy = (y1 + y2) / 2.
-    sigma = bbox_grid/FLAGS.focus #previously it was 4.
+    sigma = bbox_grid/focus #previously it was 4.
     gt = discrete_gauss((cx,cy), (cropbox_grid, cropbox_grid), sigma)
     return gt
 
@@ -248,7 +255,7 @@ the old process_sequence logic
 def old_process_sequence(root):
     framefiles = sorted([x for x in os.listdir(root) if x.endswith('.xml')])
     cropboxes = {}
-    init_normalbbox = {}
+    init_transformed_bbox = {}
     transformations = {}
     records = {}
     cropper = TFCropper()
@@ -267,7 +274,6 @@ def old_process_sequence(root):
                 """calculate cropbox"""
                 cropboxes[trackid] = calculate_cropbox(normalbbox,
                         FLAGS.cropbox_grid, FLAGS.bbox_grid)
-                init_normalbbox[trackid] = normalbbox
                 """calculate transformation"""
                 transformations[trackid] =\
                         calculate_transformation(cropboxes[trackid])
@@ -280,9 +286,10 @@ def old_process_sequence(root):
                         .5+FLAGS.bbox_grid/float(FLAGS.cropbox_grid)/2,
                         .5+FLAGS.bbox_grid/float(FLAGS.cropbox_grid)/2,
                         ]
+                init_transformed_bbox[trackid] = transformed_bbox
                 offsets = (0, 0) #(y, x)
                 gt = generate_gt(transformed_bbox, FLAGS.cropbox_grid,
-                        FLAGS.bbox_grid)
+                        FLAGS.bbox_grid, FLAGS.focus)
             else:
                 """
                 this object has already appeared in previous frames
@@ -293,8 +300,6 @@ def old_process_sequence(root):
                         FLAGS.deform_threshold, FLAGS.zoom_threshold):
                     """record effective frame"""
                     records[trackid].append(parsed_frame['filename'])
-                    """calculate the offset of this bounding box"""
-                    offsets = calculate_offsets(normalbbox, init_normalbbox[trackid])
                     """calculate the gt using previously saved
                     transformation"""
                     transformation = transformations[trackid]
@@ -302,6 +307,9 @@ def old_process_sequence(root):
                         apply_transformation(normalbbox, transformation)
                     gt = generate_gt(transformed_bbox, FLAGS.cropbox_grid,
                             FLAGS.bbox_grid)
+                    """calculate the offset of this transformed bounding box"""
+                    offsets = calculate_offsets(transformed_bbox,
+                            init_transformed_bbox[trackid])
             """
             now if the bounding box is legal, a gt will have been produced above
             """
@@ -339,7 +347,7 @@ def old_process_sequence(root):
                     cropped.save(os.path.join(output_dir,
                         parsed_frame['filename']+'_crop.png'))
 
-    print('generated {} frames'.format(len(results)))
+    print('generated {} frames'.format(len(join_lists(records.values()))))
 
 #the new process_sequence logic
 #1. every object may not be centered in the first frame. In fact, we can devise an algorithm to calculate the correct location to place the first object so that the subsequent bounding boxes are within the window despite motion.
@@ -415,6 +423,9 @@ criterion:
 def data_augmentation(obj_seq, bbox_grid=6, cropbox_grid=8,
                       seq_length=20):
     raw_length = len(obj_seq)
+    stepsize = 0
+    while True:
+        stepsize += 1
     times = raw_length / seq_length
     remainder = raw_length - times * seq_length
     """dilute the sequence and sample sub sequences"""
@@ -422,17 +433,19 @@ def data_augmentation(obj_seq, bbox_grid=6, cropbox_grid=8,
     for stepsize in xrange(1, times+1):
         num_subseq = times / stepsize #number of subsequences that can be generated for this step size
         #divide the remainder into num_subseq portions
-        remainder_shares = sorted(random.sample(range(remainder+num_subseq), num_subseq))
+        remainder_shares = sorted(random.sample(range(remainder+num_subseq-1), num_subseq))
         remainder_shares = [x-y-1 for x,y in zip(remainder_shares+[remainder-1], [0]+remainder_shares)]
         start = 0
-        for r in remainder_shares:
+        for r in remainder_shares[:-1]:
             #move start forward
             start += r
             #take the slice
+            print(start, stepsize, r)
             target_slice = obj_seq[start:start+stepsize*seq_length:stepsize]
             results.append(target_slice)
             #move the start position
             start = start+stepsize*seq_length
+    print([len(x) for x in results])
 
     """now find the optimal cropbox location for each subsequence"""
     final_results = []
@@ -446,10 +459,15 @@ def data_augmentation(obj_seq, bbox_grid=6, cropbox_grid=8,
             accumu_bbox[2] = max(accumu_bbox[2],y2)
             accumu_bbox[3] = max(accumu_bbox[3],x2)
 
+        transformation = calculate_transformation(accumu_bbox)
+        init_normalbbox = apply_transformation(subseq[0]['normalbbox'], transformation)
+
         res = []
         for record in subseq:
             cp = copy.deepcopy(record)
             cp['cropbox'] = accumu_bbox
+            cp['normalbbox'] = apply_transformation(cp['normalbbox'], transformation)
+            cp['offsets'] = calculate_offsets(cp['normalbbox'], init_normalbbox)
             res.append(cp)
         final_results.append(res)
 
@@ -488,7 +506,7 @@ def main():
             sequences.append(root)
     print('found {} sequences'.format(len(sequences)))
     pool = Pool(7)
-    pool.map(process_sequence, sequences, 1000)
+    pool.map(old_process_sequence, sequences, 1000)
     #map(process_sequence, sequences)
 
 
@@ -501,8 +519,8 @@ if __name__ == '__main__':
     flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
     flags.DEFINE_integer("bbox_grid", 6, "side length of bbox grid")
     flags.DEFINE_integer("focus", 3, "a coefficient that contributes to the sigma calculation of the generated gaussian")
-    flags.DEFINE_float("deform_threshold", 1., "criterion to stop the producing of bbox")
-    flags.DEFINE_float("zoom_threshold", 1., "criterion to stop the producing of bbox upon zoom in/out of object")
+    flags.DEFINE_float("deform_threshold", .1, "criterion to stop the producing of bbox")
+    flags.DEFINE_float("zoom_threshold", .1, "criterion to stop the producing of bbox upon zoom in/out of object")
 
     """data augmentation parameters"""
     flags.DEFINE_integer("max_sequence_length", 20, "the longest sequence to produce")

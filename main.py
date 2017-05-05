@@ -22,6 +22,13 @@ from receptive_field_sizes import conv43Points
 import random
 
 flags = tf.app.flags
+flags.DEFINE_integer("mem_size", 128, "size of mem")
+flags.DEFINE_integer("mem_dim", 20, "dim of mem")
+flags.DEFINE_integer("hidden_size", 500, "number of LSTM cells")
+flags.DEFINE_integer("num_layers", 1, "number of LSTM cells")
+flags.DEFINE_integer("read_head_size", 1, "number of read heads")
+flags.DEFINE_integer("write_head_size", 1, "number of write heads")
+flags.DEFINE_boolean("write_first", False, "write before read")
 #flags.DEFINE_string("task", "copy", "Task to run [copy, recall]")
 #flags.DEFINE_integer("epoch", 100000, "Epoch to train [100000]")
 #flags.DEFINE_integer("input_dim", 10, "Dimension of input [10]")
@@ -50,20 +57,15 @@ flags.DEFINE_integer("max_gradient_norm", 5, "for gradient clipping normalizatio
 flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
 flags.DEFINE_float("momentum", 0.9, "learning rate")
 flags.DEFINE_float("decay", 0.95, "learning rate")
-flags.DEFINE_integer("hidden_size", 100, "number of LSTM cells")
-flags.DEFINE_integer("num_layers", 10, "number of LSTM cells")
 flags.DEFINE_string("tag", "", "tag for the log record")
 flags.DEFINE_string("ckpt_path", "", "path for the ckpt file to be restored")
 flags.DEFINE_integer("log_interval", 10, "number of epochs before log")
 flags.DEFINE_float("init_scale", 0.05, "initial range for weights")
-flags.DEFINE_integer("read_head_size", 3, "number of read heads")
-flags.DEFINE_integer("write_head_size", 3, "number of write heads")
 flags.DEFINE_boolean("two_step", False, "present the input in a 2-step manner")
 flags.DEFINE_boolean("sequential", False, "present the input in a sequential manner")
 flags.DEFINE_boolean("sevenbyseven", False, "present the input in a sequential manner, and with gt sevenbyseven")
 flags.DEFINE_boolean("eightbyeight", False, "present the input in a sequential manner, and with gt eightbyeight")
 flags.DEFINE_boolean("offsets", False, "gt is offsets tuple")
-flags.DEFINE_boolean("write_first", False, "write before read")
 flags.DEFINE_boolean("sanity_check", False, "check if dataset is correct")
 flags.DEFINE_boolean("sanity_check_compressor", False, "check if compressor is correct")
 flags.DEFINE_boolean("sanity_check_trained_compressor", False, "check if compressor is correct")
@@ -72,8 +74,6 @@ flags.DEFINE_boolean("compressor", False, "whether to use compressor.  If false,
 flags.DEFINE_boolean("copy_paste", False, "perform copy_paste task to check if the ntm is correct")
 flags.DEFINE_integer("compress_dim", 128, "the output dimension of channels after input compression")
 flags.DEFINE_float("bbox_crop_ratio", 5/float(7), "The indended width of bbox relative to the crop to be generated")
-flags.DEFINE_integer("mem_size", 128, "size of mem")
-flags.DEFINE_integer("mem_dim", 20, "dim of mem")
 flags.DEFINE_boolean("test_input", False, "test the new get_input function")
 flags.DEFINE_boolean("find_validation_batch", False, "find the actual validation batch by simulating shuffling")
 flags.DEFINE_integer("gt_width", 7, "width of ground truth. a value of 7 means a 7x7 ground truth")
@@ -115,8 +115,8 @@ def save_imgs(imgs, filename, savedir=real_log_dir):
                     ax.axis('off')
                 else:
                     #print(img[batch_idx, length_idx])
-                    ax.set_xlim(-.1,.1)
-                    ax.set_ylim(-.1,.1)
+                    ax.set_xlim(-.5,.5)
+                    ax.set_ylim(-.5,.5)
                     ax.plot([img[batch_idx, length_idx, 1]],
                             [-img[batch_idx, length_idx, 0]],
                             marker='o', markersize=3,
@@ -2370,8 +2370,8 @@ def ntm_offsets():
     """
     build the tracker inputs
     the inputs should be a matrix of [batch_size, total_steps, num_features, feature_depth+2]
-    feature_depth+1-th bit is target delimiter
-    feature_depth-th bit is frame indicator
+    feature_depth+1-th bit is target indicator
+    feature_depth-th bit is frame delimiter
     """
     total_steps = FLAGS.sequence_length * (num_features + 1)
     print("constructing inputs...")
@@ -2379,19 +2379,20 @@ def ntm_offsets():
     inputs_padded = tf.concat([inputs, tf.zeros([FLAGS.batch_size,
         FLAGS.sequence_length, num_features, 1])], 3)
     #shape [batch, sequence_length-1, num_features, depth+1]
-    #shape [batch, 1, 1, depth]
+    #shape [1, 1, 1, depth]
     dummy_feature = tf.zeros([1, 1, 1, num_channels])
-    #shape [batch, 1, 1, depth]
+    #shape [1, 1, 1, depth+1]
     frame_delimiter = tf.concat([
             dummy_feature,
             tf.ones([1, 1, 1, 1], dtype=tf.float32),
             ], 3)
-    #frame delimiters, number: sequence_length - 1
+    #frame delimiters, number: sequence_length
     #shape [batch, sequence_length - 1, 1, 130]
     frame_delimiters = tf.tile(frame_delimiter,
             [FLAGS.batch_size, FLAGS.sequence_length, 1, 1],
             name="frame_delimiters")
     #now insert the frame delimiters
+    #NOTE: in this case, we put the delimiters at the end of each frame
     inputs_padded = tf.concat(
             [inputs_padded, frame_delimiters], 2)
     #now add back the zeroth frame
@@ -2402,6 +2403,8 @@ def ntm_offsets():
                 num_channels+1
             ])
     #now add the target indicators
+    #put zero for this row on every subsequent frame
+    #[batch_size, seq_len*(features+1)]
     target = tf.concat([
             target,
             tf.zeros([FLAGS.batch_size,
@@ -2424,16 +2427,6 @@ def ntm_offsets():
     2. pad the features with num_features zeros
     3. pad the features with 1 zero at beginning
     4. pad at the beginning num_features zeros
-    """
-
-    """
-    remove the first frame ground truth and create pad
-    the dimension for gt_ph [batch_size, seq_length, num_features]
-    """
-    #gt_pad = tf.zeros_like(gts[:,1:,:], dtype=tf.float32, name="gt_pad")
-    """
-    stack at last axis, so that every feature scalar is prepended by a zero
-    scalar
     """
     offsets = tf.stack([y_offsets, x_offsets], axis=1)
     offsets = tf.reshape(offsets, [FLAGS.batch_size, FLAGS.sequence_length, 2])
