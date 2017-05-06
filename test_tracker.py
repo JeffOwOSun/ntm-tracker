@@ -2,8 +2,18 @@
 interface for the VOTchallenge
 """
 import os
+from datetime import datetime
 #disable GPU
-os.environ['CUDA_VISIBLE_DEVICES']=''
+#os.environ['CUDA_VISIBLE_DEVICES']=''
+
+import logging
+from preprocess import ensure_dir
+real_dir = os.path.dirname(os.path.realpath(__file__))
+real_log_dir = os.path.join(real_dir, 'test_log', str(datetime.now()))
+ensure_dir(real_log_dir)
+logging.basicConfig(filename=os.path.join(real_log_dir, 'log.txt'),
+        level=logging.DEBUG)
+
 import sys
 import vot
 from ntm_cell import NTMCell
@@ -12,7 +22,7 @@ import preprocess
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from PIL import Image, ImageDraw
+from matplotlib.patches import Rectangle
 
 import tensorflow as tf
 import numpy as np
@@ -28,8 +38,8 @@ flags.DEFINE_string("vgg_model_frozen", "/home/jowos/git/ntm-tracker/vgg_16_froz
 flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
 flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
 flags.DEFINE_integer("bbox_grid", 6, "side length of bbox grid")
-flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-04-27 12:47:01.273589batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-offsets-saveimgs-skipframe5-memdim20-memdize128-unifiedzerostate-focus4/model.ckpt-10500", "path for the ckpt file to be restored")
-flags.DEFINE_boolean("save_img", False, "whether to save intermediate outputs")
+flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-05-05 23:18:51.712191batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-offsets-saveimgs-skipframe5-memdim20-memdize128-unifiedzerostate-focus4/model.ckpt-1400", "path for the ckpt file to be restored")
+flags.DEFINE_boolean("save_img", True, "whether to save intermediate outputs")
 
 ####################
 #parameters for ntm cell
@@ -118,10 +128,10 @@ class NTMTracker(object):
                 write_head_size=FLAGS.write_head_size,
                 write_first=FLAGS.write_first)
         #open the image
-        image = scipy.misc.imread(imagepath)
+        self.image = scipy.misc.imread(imagepath)
         #NOTE: Only getting the w and h on the fly, because different sequences
         #have different sizes
-        height, width, _ = image.shape
+        height, width, _ = self.image.shape
         self.image_size = (width, height)
         #update bbox
         self._update_bbox(self.image_size, region)
@@ -130,7 +140,7 @@ class NTMTracker(object):
         saver = tf.train.Saver()
         saver.restore(self.sess, FLAGS.ckpt_path)
         #preprocess the image
-        features = self._preprocess_image(self.sess, image, True)
+        features = self._preprocess_image(self.sess, self.image, True)
         #initialize the states with real zero_state value
         self.states = [self.sess.run(self.zero_state)]
         #run the tracker
@@ -141,7 +151,7 @@ class NTMTracker(object):
         x1 = .5-ratio/2
         y2 = .5+ratio/2
         x2 = .5+ratio/2
-        self._save_imgs(bbox=[y1,x1,y2,x2])
+        self._save_imgs(region, bbox=[y1,x1,y2,x2])
 
     """
     track one step, given the path to the frame image
@@ -149,54 +159,69 @@ class NTMTracker(object):
     def track(self, imagepath):
         self.frame += 1
         #open the image
-        image = scipy.misc.imread(imagepath)
-        features = self._preprocess_image(self.sess, image, False)
+        self.image = scipy.misc.imread(imagepath)
+        features = self._preprocess_image(self.sess, self.image, False)
         outputs = self._run_tracker(self.sess, features)
-        #print(outputs)
-        #print('np', np)
+        #logging.debug(outputs)
+        #logging.debug('np', np)
         offsets = self._collect_outputs(outputs)
         #convert this outputs to bbox
         new_bbox = self._get_bbox(offsets)
         self.output_bbox = new_bbox
-        print(new_bbox)
+        logging.debug(new_bbox)
         #import pdb; pdb.set_trace()
-        self._save_imgs()
         new_region = self._decode_bbox(new_bbox)
-        # use this new bbox to update cropbox
-        print(new_region)
+        self._save_imgs(new_region)
+        # use this new bbox to update cropbox for next frame
+        logging.debug(new_region)
         self._update_bbox(self.image_size, new_region)
         return new_region
 
-    def _save_imgs(self, bbox=None):
+    def _save_imgs(self, region, bbox=None):
+        """
+        images to save:
+            1. original input, with initial cropbox
+            2. cropped input, with predicted normalized bbox
+            3. original input, with predicted realbbox
+        """
         if FLAGS.save_img:
-            #save and visualize bbox
+            fig, axs = plt.subplots(1, 3, figsize=(3, 1), dpi=160)
+            ax = axs[0]
+            ax.axis('off')
+            ax.imshow(self.image)
+            y1,x1,y2,x2 = self.normalized_bbox
+            w, h = self.image_size
+            x1,y1,x2,y2 = [x1*w,y1*h,x2*w,y2*h]
+            ax.add_patch(Rectangle((x1, y1), x2-x1, y2-y1,
+                edgecolor='red', facecolor='none'))
+
+            y1,x1,y2,x2 = self.cropbox
+            x1,y1,x2,y2 = [x1*w,y1*h,x2*w,y2*h]
+            ax.add_patch(Rectangle((x1, y1), x2-x1, y2-y1,
+                    edgecolor='green', facecolor='none'))
+
+            ax = axs[1]
+            ax.axis('off')
+            #cropped input with predicted normalized bbox
             if not bbox:
                 bbox = self.output_bbox
-            img = Image.fromarray(self.cropped_input_image)
-            #print('img.size',img.size)
-            d = ImageDraw.Draw(img)
+            ax.imshow(self.cropped_input_image)
             y1,x1,y2,x2 = bbox
-            drawbox = [x1*224,y1*224,x2*224,y2*224]
-            #print('drawbox',drawbox)
-            d.rectangle(drawbox, outline="red")
-            img.save('{}outputimg_{}.png'.format(self.save_prefix, self.frame))
+            x1,y1,x2,y2 = [x1*224,y1*224,x2*224,y2*224]
+            ax.add_patch(Rectangle((x1, y1), x2-x1, y2-y1,
+                edgecolor='red', facecolor='none'))
 
-            #plot input, output_heatmap together with the visualized bbox
-            if hasattr(self, 'output_heatmap'):
-                fig, axs = plt.subplots(3,1,figsize=(9,3), dpi=100)
-                ax = axs[0]
-                ax.imshow(self.cropped_input_image)
-                ax.axis('off')
+            ax = axs[2]
+            ax.axis('off')
+            ax.imshow(self.image)
+            x1,y1,w,h = region
+            ax.add_patch(Rectangle((x1, y1), w, h,
+                edgecolor='red', facecolor='none'))
 
-                ax = axs[1]
-                ax.imshow(self.output_heatmap)
-                ax.axis('off')
-
-                ax = axs[2]
-                ax.imshow(img)
-                ax.axis('off')
-                fig.savefig('{}image_save_{}.png'.format(self.save_prefix,self.frame), bbox_inches='tight', pad_inches=0)
-                plt.close(fig)
+            fig.savefig(os.path.join(real_log_dir,
+                '{}outputimg_{}.png'.format(
+                    self.save_prefix, self.frame)))
+            plt.close(fig)
 
     def _initial_normal_bbox(self):
         """
@@ -251,7 +276,7 @@ class NTMTracker(object):
         """
         #only keep output on the last step
         outputs = outputs[-1]
-        print(outputs)
+        logging.debug(outputs)
         assert(len(outputs) == 2)
         return outputs
 
@@ -284,22 +309,22 @@ class NTMTracker(object):
             normalized = True
         bbox = (y1,x1,y1+h,x1+w)
         width, height = image_size
-        #print(image_size)
-        #print(bbox)
+        #logging.debug(image_size)
+        #logging.debug(bbox)
         #normalized bbox
         if not normalized:
             self.normalized_bbox = preprocess.normalize_bbox((width, height), bbox)
         else:
             self.normalized_bbox = bbox
-        #print(self.normalized_bbox)
+        #logging.debug(self.normalized_bbox)
         #cropbox
         self.cropbox = preprocess.calculate_cropbox(self.normalized_bbox,
                 FLAGS.cropbox_grid, FLAGS.bbox_grid)
-        #print(self.cropbox)
+        #logging.debug(self.cropbox)
         #transformation to map cropbox to [0,0,1,1]
         self.transformation = preprocess.calculate_transformation(self.cropbox)
-        #print(self.transformation)
-        #print(preprocess.apply_transformation(self.cropbox, self.transformation))
+        #logging.debug(self.transformation)
+        #logging.debug(preprocess.apply_transformation(self.cropbox, self.transformation))
         #import pdb; pdb.set_trace()
 
     def _build_tracker(self, **kwargs):
@@ -337,7 +362,7 @@ class NTMTracker(object):
         features_dim[1] = features_dim[2] = 8
         features, num_features = extract_features(features)
         self.features_dim = features_dim
-        #print('features_dim', features_dim)
+        #logging.debug('features_dim', features_dim)
         self.num_features = num_features
         self.features = tf.reshape(features, [num_features, features_dim[3]])
 
@@ -352,7 +377,7 @@ class NTMTracker(object):
             })
         #by default should be [8, 8, 512]
         feature_dim = features.shape
-        #print(feature_dim)
+        #logging.debug(feature_dim)
         num_features, num_channels = feature_dim
 
         if is_first_frame:
@@ -378,6 +403,7 @@ class NTMTracker(object):
         features = np.concatenate([frame_delimiter, features], 0)
         return features
 
+
 handle = vot.VOT("rectangle")
 selection = handle.region()
 
@@ -385,13 +411,14 @@ imagefile = handle.frame()
 if not imagefile:
     sys.exit(0)
 
-print(selection, imagefile)
+logging.debug(selection)
+logging.debug(imagefile)
 
 tracker = NTMTracker(imagefile, selection)
 #import pdb; pdb.set_trace()
 count = 1
 while True:
-    print('processing frame {}'.format(count))
+    logging.info('processing frame {}'.format(count))
     imagefile = handle.frame()
     if not imagefile:
         break
