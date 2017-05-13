@@ -11,9 +11,6 @@ import matplotlib.pyplot as plt
 
 import dnc
 
-from vgg import vgg_16
-
-from ntm_tracker_new import LoopNTMTracker
 from receptive_field_sizes import conv43Points
 
 import random
@@ -23,12 +20,11 @@ flags = tf.app.flags
 #model params
 #############
 flags.DEFINE_integer("mem_size", 128, "size of mem")
-flags.DEFINE_integer("mem_dim", 20, "dim of mem")
-flags.DEFINE_integer("hidden_size", 500, "number of LSTM cells")
+flags.DEFINE_integer("mem_dim", 64, "dim of mem")
+flags.DEFINE_integer("hidden_size", 200, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 1, "number of LSTM cells")
-flags.DEFINE_integer("read_head_size", 1, "number of read heads")
+flags.DEFINE_integer("read_head_size", 4, "number of read heads")
 flags.DEFINE_integer("write_head_size", 1, "number of write heads")
-flags.DEFINE_boolean("write_first", False, "write before read")
 flags.DEFINE_boolean("reverse_image", False, "reverse horizontally the input image")
 
 flags.DEFINE_integer("num_epochs", 1, "number of epochs to train")
@@ -36,9 +32,8 @@ flags.DEFINE_string("vgg_model_frozen", "./vgg_16_frozen.pb", "The pb file of th
 flags.DEFINE_string("log_dir", "./log", "The log dir")
 flags.DEFINE_integer("sequence_length", 20, "The length of input sequences")
 flags.DEFINE_integer("batch_size", 16, "size of batch")
-flags.DEFINE_string("feature_layer", "vgg_16/pool5/MaxPool:0", "The layer of feature to be put into NTM as input")
-#flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
-flags.DEFINE_integer("max_gradient_norm", 5, "for gradient clipping normalization")
+flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
+flags.DEFINE_integer("max_gradient_norm", 50, "for gradient clipping normalization")
 flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
 flags.DEFINE_float("momentum", 0.9, "learning rate")
 flags.DEFINE_float("decay", 0.95, "learning rate")
@@ -68,15 +63,15 @@ def run_model(input_sequence, output_size):
   """Runs model on input sequence."""
 
   access_config = {
-      "memory_size": FLAGS.memory_size,
-      "word_size": FLAGS.word_size,
-      "num_reads": FLAGS.num_read_heads,
-      "num_writes": FLAGS.num_write_heads,
+      "memory_size": FLAGS.mem_size,
+      "word_size": FLAGS.mem_dim,
+      "num_reads": FLAGS.read_head_size,
+      "num_writes": FLAGS.write_head_size,
   }
   controller_config = {
       "hidden_size": FLAGS.hidden_size,
   }
-  clip_value = FLAGS.clip_value
+  clip_value = FLAGS.max_gradient_norm
 
   dnc_core = dnc.DNC(access_config, controller_config, output_size, clip_value)
   initial_state = dnc_core.initial_state(FLAGS.batch_size)
@@ -149,33 +144,6 @@ def get_valid_sequences(sequences_dir=FLAGS.sequences_dir, min_length=FLAGS.sequ
             raise Exception('expect either train or val in sequence name')
     return result, train, val
 
-def create_vgg(inputs, feature_layer):
-    net, end_points = vgg_16(inputs)
-    print(end_points.keys())
-    return end_points[feature_layer]
-
-def default_get_batch(index, batch_size, seq_length, seqs):
-    """
-    get a batch of frame names and their ground truths
-
-    seqs: the sequence statistics
-    seq_length: the length of subsequence to take
-    batch_size: the number of sequences to push into the batch
-    """
-    seq_batch = seqs[index:index+batch_size]
-    index+=batch_size
-    frame_names = []
-    real_gts = []
-    for seq_dir, obj_name, subseq_id, seq_len, seq in seq_batch:
-        # only need the first seq_length frames
-        seq = seq[:seq_length]
-        # the file names [batch * seq_length]
-        frame_names += [x[0] for x in seq]
-        # the ground truths [batch, seq_length, num_features]
-        real_gts.append(np.array([np.reshape(x[-1][0], (-1)) for x in seq]))
-    real_gts = np.array(real_gts)
-    return frame_names, real_gts, index
-
 def sevenbyseven_get_batch(index, batch_size, seqs):
     """
     get a batch of frame names and their ground truths
@@ -212,21 +180,14 @@ def get_input(batch_size):
     txt_enq_op = txt_q.enqueue_many(txts)
     txt_cls_op = txt_q.close()
     key, value = txt_rdr.read(txt_q)
-    if FLAGS.offsets:
-        record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],[''],[.0],[.0]]
-        y1,x1,y2,x2,_,_,_,_,img_filename,y_offset,x_offset = tf.decode_csv(value, record_defaults)
-        cropbox = tf.stack([y1,x1,y2,x2])
-        cropboxes, img_filenames, y_offsets, x_offsets = tf.train.batch(
-                [cropbox, img_filename, y_offset, x_offset],
-                batch_size = batch_size, num_threads=1)
-        if FLAGS.reverse_image:
-            x_offsets = -x_offsets
-    else:
-        record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],['']]
-        y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
-        cropbox = tf.stack([y1,x1,y2,x2])
-        cropboxes, img_filenames = tf.train.batch([cropbox, img_filename],
-                batch_size = batch_size, num_threads=1)
+    record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],[''],[.0],[.0]]
+    y1,x1,y2,x2,_,_,_,_,img_filename,y_offset,x_offset = tf.decode_csv(value, record_defaults)
+    cropbox = tf.stack([y1,x1,y2,x2])
+    cropboxes, img_filenames, y_offsets, x_offsets = tf.train.batch(
+            [cropbox, img_filename, y_offset, x_offset],
+            batch_size = batch_size, num_threads=1)
+    if FLAGS.reverse_image:
+        x_offsets = -x_offsets
     """process the imgs"""
     img_q = tf.FIFOQueue(batch_size, tf.string)
     img_enq_op = img_q.enqueue_many(img_filenames)
@@ -263,10 +224,7 @@ def get_input(batch_size):
         batch_gt = tf.identity(batch_gt)
     close_qs_op = tf.group(txt_cls_op, img_cls_op, bin_cls_op)
 
-    if FLAGS.offsets:
-        return filename_nosuffix_ph, batch_img, batch_gt, y_offsets, x_offsets, close_qs_op
-    else:
-        return filename_nosuffix_ph, batch_img, batch_gt, close_qs_op
+    return filename_nosuffix_ph, batch_img, batch_gt, y_offsets, x_offsets, close_qs_op
 
 
 def test_get_input(batch_size=1):
@@ -570,23 +528,12 @@ def ntm_offsets():
 
     print("constructing tracker...")
     """the tracker"""
-    initializer = tf.random_uniform_initializer(-FLAGS.init_scale,FLAGS.init_scale)
-    tracker = LoopNTMTracker(total_steps, 2,
-            initializer,
-            mem_size=FLAGS.mem_size, mem_dim=FLAGS.mem_dim,
-            controller_num_layers=FLAGS.num_layers,
-            controller_hidden_size=FLAGS.hidden_size,
-            read_head_size=FLAGS.read_head_size,
-            write_head_size=FLAGS.write_head_size,
-            write_first=FLAGS.write_first,)
+    input_sequence = tf.transpose(inputs, perm=[1,0,2])
+    output_sequence = run_model(input_sequence, 2)
     """
-    shape of outputs: [batch, model_length, 2]
+    convert time-major into batch-major
     """
-    print(inputs.get_shape().as_list())
-    (outputs, output_logits,
-            #Ms, ws, reads
-            ) = tracker(inputs)
-    print(output_logits.get_shape().as_list())
+    output_logits = tf.transpose(output_sequence, perm=[1,0,2])
     #"""
     #add summaries
     #"""
