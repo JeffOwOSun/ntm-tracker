@@ -6,7 +6,6 @@ def main():
     net, end_points = vgg_16(inputs, is_training=False)
     print(end_points)
     print(end_points['vgg_16/conv4/conv4_3'].name)
-    import pdb; pdb.set_trace()
     with tf.Session() as sess:
         saver = tf.train.Saver()
         saver.restore(sess, './vgg_16.ckpt')

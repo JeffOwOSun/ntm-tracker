@@ -518,7 +518,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean("run_test", False, "whether to run tests [False]")
     flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
     flags.DEFINE_integer("bbox_grid", 6, "side length of bbox grid")
-    flags.DEFINE_integer("focus", 3, "a coefficient that contributes to the sigma calculation of the generated gaussian")
+    flags.DEFINE_integer("focus", 4, "a coefficient that contributes to the sigma calculation of the generated gaussian")
     flags.DEFINE_float("deform_threshold", .1, "criterion to stop the producing of bbox")
     flags.DEFINE_float("zoom_threshold", .1, "criterion to stop the producing of bbox upon zoom in/out of object")
 
