@@ -9,9 +9,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-
-from vgg import vgg_16
-
 from ntm_tracker_new import LoopNTMTracker
 from receptive_field_sizes import conv43Points
 
@@ -23,9 +20,9 @@ flags = tf.app.flags
 #############
 flags.DEFINE_integer("mem_size", 128, "size of mem")
 flags.DEFINE_integer("mem_dim", 20, "dim of mem")
-flags.DEFINE_integer("hidden_size", 500, "number of LSTM cells")
+flags.DEFINE_integer("hidden_size", 200, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 1, "number of LSTM cells")
-flags.DEFINE_integer("read_head_size", 1, "number of read heads")
+flags.DEFINE_integer("read_head_size", 4, "number of read heads")
 flags.DEFINE_integer("write_head_size", 1, "number of write heads")
 flags.DEFINE_boolean("write_first", False, "write before read")
 flags.DEFINE_boolean("reverse_image", False, "reverse horizontally the input image")
@@ -34,9 +31,7 @@ flags.DEFINE_integer("num_epochs", 1, "number of epochs to train")
 flags.DEFINE_string("vgg_model_frozen", "./vgg_16_frozen.pb", "The pb file of the frozen vgg_16 network")
 flags.DEFINE_string("log_dir", "./log", "The log dir")
 flags.DEFINE_integer("sequence_length", 20, "The length of input sequences")
-flags.DEFINE_integer("batch_size", 16, "size of batch")
-flags.DEFINE_string("feature_layer", "vgg_16/pool5/MaxPool:0", "The layer of feature to be put into NTM as input")
-#flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
+flags.DEFINE_integer("batch_size", 1, "size of batch")
 flags.DEFINE_integer("max_gradient_norm", 5, "for gradient clipping normalization")
 flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
 flags.DEFINE_float("momentum", 0.9, "learning rate")
@@ -124,11 +119,6 @@ def get_valid_sequences(sequences_dir=FLAGS.sequences_dir, min_length=FLAGS.sequ
             raise Exception('expect either train or val in sequence name')
     return result, train, val
 
-def create_vgg(inputs, feature_layer):
-    net, end_points = vgg_16(inputs)
-    print(end_points.keys())
-    return end_points[feature_layer]
-
 def default_get_batch(index, batch_size, seq_length, seqs):
     """
     get a batch of frame names and their ground truths
@@ -187,21 +177,14 @@ def get_input(batch_size):
     txt_enq_op = txt_q.enqueue_many(txts)
     txt_cls_op = txt_q.close()
     key, value = txt_rdr.read(txt_q)
-    if FLAGS.offsets:
-        record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],[''],[.0],[.0]]
-        y1,x1,y2,x2,_,_,_,_,img_filename,y_offset,x_offset = tf.decode_csv(value, record_defaults)
-        cropbox = tf.stack([y1,x1,y2,x2])
-        cropboxes, img_filenames, y_offsets, x_offsets = tf.train.batch(
-                [cropbox, img_filename, y_offset, x_offset],
-                batch_size = batch_size, num_threads=1)
-        if FLAGS.reverse_image:
-            x_offsets = -x_offsets
-    else:
-        record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],['']]
-        y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
-        cropbox = tf.stack([y1,x1,y2,x2])
-        cropboxes, img_filenames = tf.train.batch([cropbox, img_filename],
-                batch_size = batch_size, num_threads=1)
+    record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],[''],[.0],[.0]]
+    y1,x1,y2,x2,_,_,_,_,img_filename,y_offset,x_offset = tf.decode_csv(value, record_defaults)
+    cropbox = tf.stack([y1,x1,y2,x2])
+    cropboxes, img_filenames, y_offsets, x_offsets = tf.train.batch(
+            [cropbox, img_filename, y_offset, x_offset],
+            batch_size = batch_size, num_threads=1)
+    if FLAGS.reverse_image:
+        x_offsets = -x_offsets
     """process the imgs"""
     img_q = tf.FIFOQueue(batch_size, tf.string)
     img_enq_op = img_q.enqueue_many(img_filenames)
@@ -238,10 +221,7 @@ def get_input(batch_size):
         batch_gt = tf.identity(batch_gt)
     close_qs_op = tf.group(txt_cls_op, img_cls_op, bin_cls_op)
 
-    if FLAGS.offsets:
-        return filename_nosuffix_ph, batch_img, batch_gt, y_offsets, x_offsets, close_qs_op
-    else:
-        return filename_nosuffix_ph, batch_img, batch_gt, close_qs_op
+    return filename_nosuffix_ph, batch_img, batch_gt, y_offsets, x_offsets, close_qs_op
 
 
 def test_get_input(batch_size=1):

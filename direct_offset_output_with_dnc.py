@@ -20,12 +20,14 @@ flags = tf.app.flags
 #model params
 #############
 flags.DEFINE_integer("mem_size", 128, "size of mem")
-flags.DEFINE_integer("mem_dim", 64, "dim of mem")
+flags.DEFINE_integer("mem_dim", 20, "dim of mem")
 flags.DEFINE_integer("hidden_size", 200, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 1, "number of LSTM cells")
 flags.DEFINE_integer("read_head_size", 4, "number of read heads")
 flags.DEFINE_integer("write_head_size", 1, "number of write heads")
 flags.DEFINE_boolean("reverse_image", False, "reverse horizontally the input image")
+flags.DEFINE_integer("clip_value", 20,
+                        "Maximum absolute value of controller and dnc outputs.")
 
 flags.DEFINE_integer("num_epochs", 1, "number of epochs to train")
 flags.DEFINE_string("vgg_model_frozen", "./vgg_16_frozen.pb", "The pb file of the frozen vgg_16 network")
@@ -35,6 +37,8 @@ flags.DEFINE_integer("batch_size", 16, "size of batch")
 flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
 flags.DEFINE_integer("max_gradient_norm", 50, "for gradient clipping normalization")
 flags.DEFINE_float("learning_rate", 1e-4, "learning rate")
+flags.DEFINE_float("optimizer_epsilon", 1e-10,
+                      "Epsilon used for RMSProp optimizer.")
 flags.DEFINE_float("momentum", 0.9, "learning rate")
 flags.DEFINE_float("decay", 0.95, "learning rate")
 flags.DEFINE_string("tag", "", "tag for the log record")
@@ -71,7 +75,7 @@ def run_model(input_sequence, output_size):
   controller_config = {
       "hidden_size": FLAGS.hidden_size,
   }
-  clip_value = FLAGS.max_gradient_norm
+  clip_value = FLAGS.clip_value
 
   dnc_core = dnc.DNC(access_config, controller_config, output_size, clip_value)
   initial_state = dnc_core.initial_state(FLAGS.batch_size)
@@ -460,7 +464,6 @@ def ntm_offsets():
     feature_depth+1-th bit is target indicator
     feature_depth-th bit is frame delimiter
     """
-    total_steps = FLAGS.sequence_length * (num_features + 1)
     print("constructing inputs...")
     #shape [batch, seq_len, num_features, depth+1]
     inputs_padded = tf.concat([inputs, tf.zeros([FLAGS.batch_size,
@@ -611,8 +614,8 @@ def ntm_offsets():
         collections=[tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.GLOBAL_STEP])
     grads, _ = tf.clip_by_global_norm(tf.gradients(loss_op, tvars),
             FLAGS.max_gradient_norm)
-    optimizer = tf.train.RMSPropOptimizer(FLAGS.learning_rate,
-            decay=FLAGS.decay, momentum=FLAGS.momentum)
+    optimizer = tf.train.RMSPropOptimizer(
+            FLAGS.learning_rate, epsilon=FLAGS.optimizer_epsilon)
     train_op = optimizer.apply_gradients(
             zip(grads, tvars),
             global_step = global_step)

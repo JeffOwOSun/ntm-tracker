@@ -32,20 +32,8 @@ the actual frame image file. The .bin files are dumped float32 array of heatmaps
 ```sh
 python \
 direct_offset_output.py \
---batch_size=1 \
---sequence_length=20 \
---num_layers=1 \
---log_interval=1 \
---num_epochs=10 \
---learning_rate=1e-4 \
---hidden_size=200 \
---read_head_size=4 \
---write_head_size=1 \
---mem_dim=20 \
---mem_size=128 \
 --sequences_dir=$HOME/data/ILSVRC2015/cropped/your_output_dir \
 --tag=<meaningful_suffix_to_the_log_dir> \
---gt_width=8 \
 ```
 Check the specific script for more options.
 
