@@ -29,6 +29,7 @@ flags.DEFINE_integer("num_layers", 1, "number of LSTM cells")
 flags.DEFINE_integer("read_head_size", 1, "number of read heads")
 flags.DEFINE_integer("write_head_size", 1, "number of write heads")
 flags.DEFINE_boolean("write_first", False, "write before read")
+flags.DEFINE_boolean("reverse_image", False, "reverse horizontally the input image")
 #flags.DEFINE_string("task", "copy", "Task to run [copy, recall]")
 #flags.DEFINE_integer("epoch", 100000, "Epoch to train [100000]")
 #flags.DEFINE_integer("input_dim", 10, "Dimension of input [10]")
@@ -81,8 +82,6 @@ flags.DEFINE_integer("gt_depth", 8, "number of bytes used for each pixel")
 flags.DEFINE_string("sequences_dir", "", "dir to look for sequences")
 flags.DEFINE_integer("validation_interval", 100, "number of steps before validation")
 flags.DEFINE_integer("validation_batch", 1, "validate only this number of batches")
-flags.DEFINE_integer("min_skip_len", 1, "minimal number of frames to skip")
-flags.DEFINE_integer("max_skip_len", 5, "maximal number of frames to skip")
 
 FLAGS = flags.FLAGS
 
@@ -128,7 +127,7 @@ def save_imgs(imgs, filename, savedir=real_log_dir):
             bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
-def get_valid_sequences(sequences_dir=FLAGS.sequences_dir, min_length=FLAGS.sequence_length, min_skip_len=FLAGS.min_skip_len, max_skip_len=FLAGS.max_skip_len):
+def get_valid_sequences(sequences_dir=FLAGS.sequences_dir, min_length=FLAGS.sequence_length):
     """dirs of sequences"""
     sequences = [os.path.join(sequences_dir,x) for x in
             sorted(os.listdir(sequences_dir))]
@@ -143,16 +142,17 @@ def get_valid_sequences(sequences_dir=FLAGS.sequences_dir, min_length=FLAGS.sequ
         Only retain the files that are long enough.
         For long sequences, dilate the steps taken to enrich the input
         """
-        actual_max_skip_len = min(len(files) / min_length, max_skip_len)
-        for skip in xrange(min_skip_len, actual_max_skip_len+1):
-            sliced = files[::skip][:min_length]
-            result.append((seqdir, sliced))
-            if 'train' in seqdir:
-                train.append((seqdir, sliced))
-            elif 'val' in seqdir:
-                val.append((seqdir, sliced))
-            else:
-                raise Exception('expect either train or val in sequence name')
+        skip = len(files) / min_length
+        if skip == 0:
+            continue
+        sliced = files[::skip][:min_length]
+        result.append((seqdir, sliced))
+        if 'train' in seqdir:
+            train.append((seqdir, sliced))
+        elif 'val' in seqdir:
+            val.append((seqdir, sliced))
+        else:
+            raise Exception('expect either train or val in sequence name')
     return result, train, val
 
 def create_vgg(inputs, feature_layer):
@@ -225,6 +225,8 @@ def get_input(batch_size):
         cropboxes, img_filenames, y_offsets, x_offsets = tf.train.batch(
                 [cropbox, img_filename, y_offset, x_offset],
                 batch_size = batch_size, num_threads=1)
+        if FLAGS.reverse_image:
+            x_offsets = -x_offsets
     else:
         record_defaults = [[.0],[.0],[.0],[.0],[.0],[.0],[.0],[.0],['']]
         y1,x1,y2,x2,_,_,_,_,img_filename = tf.decode_csv(value, record_defaults)
@@ -245,6 +247,9 @@ def get_input(batch_size):
             num_threads=1)
     batch_img = tf.image.crop_and_resize(batch_img, cropboxes,
             tf.range(batch_size), [224, 224])
+    print(batch_img.get_shape().as_list())
+    if FLAGS.reverse_image:
+        batch_img = tf.reverse(batch_img, [2])
     with tf.control_dependencies([txt_enq_op, img_enq_op]):
         batch_img = tf.identity(batch_img)
 
@@ -2603,6 +2608,8 @@ def main(_):
 if __name__ == '__main__':
     with open('visualize.sh', 'w') as f:
         f.write('tensorboard --logdir="{}"'.format(real_log_dir))
+    with open('test_tracker.sh', 'w') as f:
+        f.write('python test_tracker --ckpt_path="{}/model.ckpt-xxxx"'.format(real_log_dir))
     if (FLAGS.test_read_imgs):
         test_read_imgs()
     elif FLAGS.test_input:

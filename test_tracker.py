@@ -38,7 +38,8 @@ flags.DEFINE_string("vgg_model_frozen", "/home/jowos/git/ntm-tracker/vgg_16_froz
 flags.DEFINE_string("feature_layer", "vgg_16/conv4/conv4_3/Relu:0", "The layer of feature to be put into NTM as input")
 flags.DEFINE_integer("cropbox_grid", 8, "side length of grid, on which the ground truth will be generated")
 flags.DEFINE_integer("bbox_grid", 6, "side length of bbox grid")
-flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-05-05 23:18:51.712191batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-offsets-saveimgs-skipframe5-memdim20-memdize128-unifiedzerostate-focus4/model.ckpt-1400", "path for the ckpt file to be restored")
+#flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-05-05 23:18:51.712191batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-offsets-saveimgs-skipframe5-memdim20-memdize128-unifiedzerostate-focus4/model.ckpt-1400", "path for the ckpt file to be restored")
+flags.DEFINE_string("ckpt_path", "/home/jowos/git/ntm-tracker/log/2017-05-12 12:39:44.560703batch4-seqlen20-numlayer1-hidden500-epoch10-lr1e-4-rw1-offsets-saveimgs-skipframe1to10-memdim20-memdize128-unifiedzerostate-focus4-average-take/model.ckpt-2600", "path for the ckpt file to be restored")
 flags.DEFINE_boolean("save_img", True, "whether to save intermediate outputs")
 
 ####################
@@ -46,9 +47,9 @@ flags.DEFINE_boolean("save_img", True, "whether to save intermediate outputs")
 ####################
 flags.DEFINE_integer("mem_size", 128, "size of mem")
 flags.DEFINE_integer("mem_dim", 20, "dim of mem")
-flags.DEFINE_integer("hidden_size", 500, "number of LSTM cells")
+flags.DEFINE_integer("hidden_size", 200, "number of LSTM cells")
 flags.DEFINE_integer("num_layers", 1, "number of LSTM cells")
-flags.DEFINE_integer("read_head_size", 1, "number of read heads")
+flags.DEFINE_integer("read_head_size", 4, "number of read heads")
 flags.DEFINE_integer("write_head_size", 1, "number of write heads")
 flags.DEFINE_boolean("write_first", False, "write before read")
 

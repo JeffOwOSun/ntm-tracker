@@ -1,6 +1,6 @@
 import os
 #disable GPU
-os.environ['CUDA_VISIBLE_DEVICES']=''
+#os.environ['CUDA_VISIBLE_DEVICES']=''
 import numpy as np
 import tensorflow as tf
 from PIL import Image, ImageDraw
